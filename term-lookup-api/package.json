@@ -1,0 +1,14 @@
+{
+  "name": "term-lookup-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Authenticated multilingual professional-term lookup API",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=25.0.0"
+  }
+}

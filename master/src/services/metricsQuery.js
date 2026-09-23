@@ -9,9 +9,11 @@ const EdgeMetric = require('../models/EdgeMetric');
 // - 单文件按 (edge_id, file_id) 维度查询（同一物理 Edge 双域名注册时不合并计数）
 
 const windowStart = (windowSec) => new Date(Math.floor(Date.now() / 60000) * 60000 - windowSec * 1000);
-// 比率分子用 s2xx（真实成功响应）：失败请求（文件丢失 500 等）若计入分子，
-// 会让坏节点显得健康；requests 仅作为展示字段
-const ratioOf = (dispatch, s2xx) => (dispatch > 0 ? Math.min(s2xx / dispatch, 1.5) : null);
+// 比率分子用 downloads_completed（完整送达的下载）：
+// - 打开后中断、失败请求不会进入分子
+// - HEAD 即使返回 2xx 也只是元数据探测，不能抬高交付健康度
+// requests / s2xx / downloads_started 仅作为原始指标展示
+const ratioOf = (dispatch, completed) => (dispatch > 0 ? Math.min(completed / dispatch, 1.5) : null);
 // 排除系统统计桶（_invalid/_unknown 等）：无效 token 或未知文件的请求
 // 不代表真实交付
 const NOT_SYSTEM_BUCKET = { file_id: { $not: /^_/ } };
@@ -30,6 +32,8 @@ async function edgeDelivery(edgeId, windowSec) {
           _id: null,
           requests: { $sum: '$requests' },
           s2xx: { $sum: '$s2xx' },
+          downloads_started: { $sum: '$downloads_started' },
+          downloads_completed: { $sum: '$downloads_completed' },
         },
       },
     ]),
@@ -37,7 +41,16 @@ async function edgeDelivery(edgeId, windowSec) {
   const dispatch = d[0]?.count || 0;
   const requests = r[0]?.requests || 0;
   const s2xx = r[0]?.s2xx || 0;
-  return { dispatch, requests, s2xx, ratio: ratioOf(dispatch, s2xx) };
+  const downloads_started = r[0]?.downloads_started || 0;
+  const downloads_completed = r[0]?.downloads_completed || 0;
+  return {
+    dispatch,
+    requests,
+    s2xx,
+    downloads_started,
+    downloads_completed,
+    ratio: ratioOf(dispatch, downloads_completed),
+  };
 }
 
 async function allEdgesDelivery(windowSec) {
@@ -54,19 +67,37 @@ async function allEdgesDelivery(windowSec) {
           _id: '$edge_id',
           requests: { $sum: '$requests' },
           s2xx: { $sum: '$s2xx' },
+          downloads_started: { $sum: '$downloads_started' },
+          downloads_completed: { $sum: '$downloads_completed' },
         },
       },
     ]),
   ]);
   const map = new Map();
-  for (const row of d) map.set(row._id, { dispatch: row.dispatch, requests: 0, s2xx: 0 });
+  for (const row of d) {
+    map.set(row._id, {
+      dispatch: row.dispatch,
+      requests: 0,
+      s2xx: 0,
+      downloads_started: 0,
+      downloads_completed: 0,
+    });
+  }
   for (const row of r) {
-    const cur = map.get(row._id) || { dispatch: 0, requests: 0, s2xx: 0 };
+    const cur = map.get(row._id) || {
+      dispatch: 0,
+      requests: 0,
+      s2xx: 0,
+      downloads_started: 0,
+      downloads_completed: 0,
+    };
     cur.requests = row.requests;
     cur.s2xx = row.s2xx;
+    cur.downloads_started = row.downloads_started;
+    cur.downloads_completed = row.downloads_completed;
     map.set(row._id, cur);
   }
-  for (const v of map.values()) v.ratio = ratioOf(v.dispatch, v.s2xx);
+  for (const v of map.values()) v.ratio = ratioOf(v.dispatch, v.downloads_completed);
   return map;
 }
 
@@ -86,6 +117,7 @@ async function fileDelivery(file, windowSec) {
           _id: { edge_id: '$edge_id', file_id: '$file_id' },
           requests: { $sum: '$requests' },
           s2xx: { $sum: '$s2xx' },
+          downloads_started: { $sum: '$downloads_started' },
           downloads_completed: { $sum: '$downloads_completed' },
           bytes_sent: { $sum: '$bytes_sent' },
         },
@@ -98,15 +130,17 @@ async function fileDelivery(file, windowSec) {
     const dispatch = dispatchByEdge.get(fe.edge_id) || 0;
     const row = metricByKey.get(`${fe.edge_id}\u0000${fe.edge_file_id}`) || {};
     const s2xx = row.s2xx || 0;
+    const downloads_started = row.downloads_started || 0;
     return {
       edge_id: fe.edge_id,
       edge_file_id: fe.edge_file_id,
       dispatch,
       requests: row.requests || 0,
       s2xx,
+      downloads_started,
       downloads_completed: row.downloads_completed || 0,
       bytes_sent: row.bytes_sent || 0,
-      ratio: ratioOf(dispatch, s2xx),
+      ratio: ratioOf(dispatch, row.downloads_completed || 0),
     };
   });
 }

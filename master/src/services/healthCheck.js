@@ -3,6 +3,7 @@
 const Edge = require('../models/Edge');
 const { nextStatusFromActive } = require('./healthRules');
 const { transitionStatus } = require('./passiveHealth');
+const { fetchEdge } = require('./networkPolicy');
 
 // 对单个 Edge 执行一次主动探活并落库状态迁移。
 // 计数用 findOneAndUpdate + $inc 原子更新：定时循环、手动 probe、注册后首探
@@ -15,7 +16,7 @@ async function checkEdge(edge, cfg, log = console.log) {
   let error = '';
   let body = null;
   try {
-    const res = await fetch(`${base}/api/health`, {
+    const res = await fetchEdge(`${base}/api/health`, {
       signal: AbortSignal.timeout(cfg.healthTimeoutMs),
       headers: edge.api_key ? { 'x-api-key': edge.api_key } : {},
     });
@@ -37,7 +38,7 @@ async function checkEdge(edge, cfg, log = console.log) {
           'health.payload': body,
           'health.consecutive_failures': 0,
         },
-        $inc: { 'health.consecutive_successes': 1 },
+        $inc: { 'health.consecutive_successes': 1, 'health.revision': 1 },
       }
     : {
         $set: {
@@ -45,7 +46,7 @@ async function checkEdge(edge, cfg, log = console.log) {
           'health.last_error': error,
           'health.consecutive_successes': 0,
         },
-        $inc: { 'health.consecutive_failures': 1 },
+        $inc: { 'health.consecutive_failures': 1, 'health.revision': 1 },
       };
 
   const fresh = await Edge.findOneAndUpdate({ edge_id: edge.edge_id }, ops, { new: true });
@@ -67,6 +68,7 @@ async function checkEdge(edge, cfg, log = console.log) {
     const r = await transitionStatus(edge.edge_id, fresh.status, next, {
       successes: fresh.health.consecutive_successes,
       failures: fresh.health.consecutive_failures,
+      revision: fresh.health.revision,
     });
     changed = r.updated;
     if (r.updated) {

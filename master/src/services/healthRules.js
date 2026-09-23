@@ -7,7 +7,7 @@
 //   连续失败 >= unhealthyAfterFailures → unhealthy
 //   unhealthy/offline 连续成功 >= recoverySuccesses → degraded（观察期，小流量验证）
 //
-// 被动比率（nextStatusFromRatio，delivery_ratio = edge 实际请求 / 总控分发）：
+// 被动比率（nextStatusFromRatio，delivery_ratio = downloads_completed / 总控分发）：
 //   ratio < unhealthyBelow → unhealthy
 //   ratio < degradedBelow  → degraded（healthy 才降；degraded/unhealthy 保持）
 //   比率良好时 degraded 需连续 recoveryPasses 次才回 healthy（先观察一个周期）

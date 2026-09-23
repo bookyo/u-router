@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "RO 商人商店面板（lastro api.html）",
+  "version": "1.0.0",
+  "description": "游戏页右侧悬浮商店面板：实时拉取蝎子商人库存/价目，选商品数量算总价，一键飞艇/寻路到商人，一键发起交易（商人主动发起，本端自动放钱+锁定+执行）。",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1:8790/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://post.lastro.cn/ro/api.html*",
+        "https://game.lastro.cn/ro/api.html*"
+      ],
+      "js": ["content-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://post.lastro.cn/ro/api.html*",
+        "https://game.lastro.cn/ro/api.html*"
+      ],
+      "js": ["content-shop.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}

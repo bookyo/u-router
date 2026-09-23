@@ -59,6 +59,18 @@ function initDatabase(dbPath) {
   } catch {
     /* 列已存在 */
   }
+  // 幂等键必须覆盖终态任务，并由数据库唯一约束兜底。旧版本可能已产生
+  // 重复键，升级时保留最早一条，其余清空后再建索引。
+  db.exec(`
+    UPDATE pulls
+       SET dedup_key = NULL
+     WHERE dedup_key IS NOT NULL
+       AND rowid NOT IN (
+         SELECT MIN(rowid) FROM pulls WHERE dedup_key IS NOT NULL GROUP BY dedup_key
+       );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pulls_dedup_key
+      ON pulls(dedup_key) WHERE dedup_key IS NOT NULL;
+  `);
 
   return db;
 }

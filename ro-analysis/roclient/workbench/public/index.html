@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🐱 猫队练级工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">🐱 猫队练级工作台 <a href="/afk" style="font-size:12px;color:#6cf">🛡 挂机保姆</a> <a href="/lvl" style="font-size:12px;color:#6cf">🎓 老号练级中心</a> <a href="/mule" style="font-size:12px;color:#6cf">🛒 常驻商人</a> <a href="/market" style="font-size:12px;color:#6cf">🏪 爬店标签</a></div>
+  <div class="summary" id="summary">未启动</div>
+  <div class="actions">
+    <button id="btnNew" class="primary">＋ 新号标签</button>
+    <button id="btnOld">＋ 旧号标签</button>
+    <button id="btnBounty">💰 赏金标签</button>
+    <button id="btnPool">账号池</button>
+  </div>
+</header>
+
+<nav id="tabbar" class="empty"></nav>
+<main id="main" class="empty">
+  <div class="placeholder">点击右上角「＋ 新号标签 / ＋ 旧号标签」开始<br>
+    <div class="hint">新号 = 自动注册练满 12 只猫 · 旧号 = 把账号里不足 30 级的角色练满（缺的补建）<br>
+    引擎默认「离线挂机+巡访」，可在建标签时选全程在线（hunter 智能走位）</div>
+  </div>
+</main>
+
+<dialog id="dlg">
+  <form id="form" method="dialog">
+    <h3 id="dlgTitle">新号标签</h3>
+    <label class="row" id="acctRow"><span>账号</span><input name="account" placeholder="已有账号名" autocomplete="off"></label>
+    <label class="row" id="passRow"><span>密码</span><input name="password" placeholder="（本地存档有则免填）" autocomplete="off"></label>
+    <label class="row" id="poolRow" style="display:none"><span>领号</span>
+      <select name="poolPick" style="flex:1"></select></label>
+    <label class="row" id="manualRow" style="display:none"><span>手动账号</span><input name="manualAccount" placeholder="自行添加账号（留空=按上面领号）" autocomplete="off"></label>
+    <label class="row" id="manualPassRow" style="display:none"><span>密码</span><input name="manualPassword" placeholder="（本地存档有则免填）" autocomplete="off"></label>
+    <label class="row chk" id="stayRow"><input type="checkbox" name="stay"><span>全程在线模式（hunter 智能走位，默认离线挂机+巡访）</span></label>
+    <label class="row chk" id="loopRow"><input type="checkbox" name="loop" checked><span>练满后自动开下一个新号（循环）</span></label>
+    <label class="row chk" id="loopBountyRow" style="display:none"><input type="checkbox" name="loopBounty" checked><span>跑完一个号自动领下一个（循环）</span></label>
+    <div class="btns">
+      <button type="submit" value="ok" class="primary">启动</button>
+      <button type="submit" value="cancel">取消</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="poolDlg">
+  <h3>💾 账号池（练满 12 只 30 级猫 + 手动添加）</h3>
+  <form id="poolAdd" style="display:flex;gap:8px;margin-bottom:10px">
+    <input name="account" placeholder="账号" autocomplete="off" style="width:150px">
+    <input name="password" placeholder="密码（存档有则免填）" autocomplete="off" style="flex:1">
+    <button type="submit" class="primary small">＋ 加入账号池</button>
+  </form>
+  <div id="poolBody" class="poolBody">加载中…</div>
+  <div class="btns"><button onclick="poolDlg.close()">关闭</button></div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

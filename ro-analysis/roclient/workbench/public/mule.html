@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>常驻商人 · 工作台</title>
+<style>
+:root{--bg:#111;--panel:#1b1b1f;--line:#2a2a30;--fg:#ddd;--dim:#888;--acc:#6cf;--ok:#6f6;--warn:#f96}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:13px/1.6 Menlo,monospace;margin:0;padding:14px}
+h2{margin:0 0 4px;font-size:15px}h3{margin:10px 0 6px;font-size:13px;color:var(--acc)}
+a{color:var(--acc)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;max-width:900px;margin:0 auto 12px}
+.wrap{max-width:920px;margin:0 auto}
+input,button{background:#151518;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:6px 10px;font:12px Menlo,monospace}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.pri{background:#1d3a52;border-color:#2d5a82}
+.tag{padding:1px 8px;border-radius:3px;font-size:11px}
+.s-on{background:rgba(60,200,90,.15);color:var(--ok)}.s-off{background:#222;color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left}
+th{color:var(--dim);font-weight:400}
+.dim{color:var(--dim)}
+#inv{max-height:320px;overflow:auto}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>🛒 常驻商人 <span class="dim">（开启=自动上号到 morocc(181,85)；关闭/暂停=自动优雅下号，方便你本人上号补货）</span></h2>
+  <div class="dim" style="margin-bottom:8px"><a href="/">← 返回工作台</a> ｜ 交易下单：POST :8790/order ｜ 与赏金/AFK 账号互斥</div>
+  <div>
+    账号 <input id="acc" style="width:130px"> 密码 <input id="pw" type="password" style="width:130px">
+    角色 slot <input id="slot" type="number" value="0" style="width:50px">
+    <button class="pri" onclick="save()">💾 保存配置</button>
+    <button class="pri" onclick="start()">▶ 开启</button>
+    <button onclick="stop()">⏹ 关闭（下号）</button>
+    <button onclick="stop()">⏸ 暂停（下号）</button>
+    <span class="dim" id="hint"></span>
+  </div>
+  <div style="margin-top:8px">状态：<span id="st" class="tag s-off">未运行</span>
+    <span class="dim" id="game"></span></div>
+</div>
+<div class="card">
+  <h3>商人库存（背包+推车）</h3>
+  <div id="inv" class="dim">开启后显示</div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+async function api(p, opt) {
+  const o = opt || {};
+  const init = { method: o.method || 'POST', headers: { 'Content-Type': 'application/json' } };
+  if (init.method !== 'GET') init.body = JSON.stringify(o.body || {});
+  const r = await fetch(p, init);
+  return r.json();
+}
+async function refresh() {
+  const d = await api('/api/mule', { method: 'GET' });   // 必须 GET：POST /api/mule 是保存配置接口（fetch 封装默认 POST 的坑，曾致每 4s 清空配置）
+  if (!d.account && !$('#acc').value) { $('#acc').value = 'xiezixing4'; }
+  $('#acc').value = $('#acc').value || d.account || '';
+  $('#slot').value = d.slot || 0;
+  $('#st').textContent = d.running ? `运行中 (pid ${d.pid})` : '已停止';
+  $('#st').className = 'tag ' + (d.running ? 's-on' : 's-off');
+  $('#hint').textContent = d.passwordSet ? '（密码已保存）' : '';
+  if (d.running) {
+    const g = await api('/api/mule/game', { method: 'GET' });
+    $('#game').textContent = g.online ? `在线 ${g.map} @(${(g.pos||[]).slice(0,2)}) 状态:${g.state}` : '连接中…';
+    const inv = await api('/api/mule/inventory', { method: 'GET' });
+    if (inv.inventory) {
+      $('#inv').className = '';
+      // 价目管理：走工作台同源代理（云端浏览器可达，代理自动带管理 KEY），加载在售价
+      let priceMap = {};
+      try { const st = await api('/api/mule/stock', { method: 'GET' }); (st.items || []).forEach((i) => priceMap[i.ITID] = i.price); } catch (_) {}
+      // 同物品合并一行，背包/推车分列（旧版 mule 进程无 cart 字段 → 全计入背包列，兼容不炸）
+      const rows = new Map();
+      const add = (list, src) => (list || []).forEach((i) => {
+        const r = rows.get(i.ITID) || { name: i.name, ITID: i.ITID, inv: 0, cart: 0 };
+        r[src] += i.count || 1;
+        rows.set(i.ITID, r);
+      });
+      add(inv.inventory, 'inv'); add(inv.cart, 'cart');
+      // 用户正在价目输入框里操作时跳过本轮表格重渲染（每 4s 刷新曾把输入中的单价框直接重建掉）
+      const ae = document.activeElement;
+      if (ae && ae.tagName === 'INPUT' && String(ae.id || '').startsWith('p_')) return;
+      $('#inv').innerHTML = '<div class="dim" style="margin-bottom:6px">定价按物品生效（背包+推车都算在售库存，交易时自动从推车补货）；设置价格=上架，点「下架」=停止出售</div>' +
+        '<table><tr><th>物品</th><th>ITID</th><th>背包</th><th>推车</th><th>合计</th><th>单价(z)</th><th></th></tr>' +
+        [...rows.values()].sort((a, b) => (b.inv + b.cart) - (a.inv + a.cart)).map((r) =>
+          `<tr><td>${r.name}</td><td class=dim>#${r.ITID}</td><td>${r.inv}</td><td>${r.cart}</td><td>${r.inv + r.cart}</td>` +
+          `<td><input id="p_${r.ITID}" type="number" min="0" value="${priceMap[r.ITID] != null ? priceMap[r.ITID] : ''}" placeholder="未上架" style="width:70px"></td>` +
+          `<td><button class="pri" onclick="setPrice(${r.ITID})">保存</button> <button onclick="delPrice(${r.ITID})">下架</button></td></tr>`).join('') + '</table>';
+    }
+  } else { $('#game').textContent = ''; $('#inv').textContent = '开启后显示'; $('#inv').className = 'dim'; }
+}
+async function save() {
+  await api('/api/mule', { body: { account: $('#acc').value.trim(), password: $('#pw').value.trim(), slot: +$('#slot').value } });
+  $('#hint').textContent = '已保存';
+  refresh();
+}
+async function start() { const r = await api('/api/mule/start'); if (!r.ok) alert('启动失败（检查配置/账号互斥）'); refresh(); }
+async function stop() { await api('/api/mule/stop'); setTimeout(refresh, 1500); }
+// 价目管理：走工作台同源代理 /api/mule/*（云端可用；工作台门禁 Cookie + 代理代发管理 KEY 双重验证）
+async function mulePost(path, body) {
+  try { return await api('/api/mule' + path, { body }); }
+  catch (e) { return { ok: false, error: String(e) }; }
+}
+async function setPrice(ITID) {
+  const v = $('#p_' + ITID).value;
+  const r = await mulePost('/price', { ITID, price: Math.max(0, +v || 0) });
+  $('#hint').textContent = r.ok ? '✅ 价格已保存' : '❌ ' + (r.error || '失败');
+  refresh();
+}
+async function delPrice(ITID) {
+  const r = await mulePost('/price', { ITID, remove: true });
+  $('#hint').textContent = r.ok ? '⬇ 已下架' : '❌ ' + (r.error || '失败');
+  refresh();
+}
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

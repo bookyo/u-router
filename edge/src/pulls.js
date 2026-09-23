@@ -41,16 +41,50 @@ function bad(message, status = 400) {
 
 const PRIVATE_HINT = '禁止拉取内网/回环地址（Edge 内网分发需设置 PULL_ALLOW_PRIVATE_NET=true）';
 
+const v4Block = new net.BlockList();
+for (const [address, prefix] of [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+]) {
+  v4Block.addSubnet(address, prefix, 'ipv4');
+}
+
+const v6Block = new net.BlockList();
+for (const [address, prefix] of [
+  ['::', 128],
+  ['::1', 128],
+  ['::', 96], // 已废弃的 IPv4-compatible IPv6（如 ::127.0.0.1）
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['fec0::', 10], // 已废弃的 site-local，仍不可作为公网目标
+  ['ff00::', 8],
+  ['2001::', 23], // IETF 特殊用途聚合段（benchmark、ORCHID 等）
+  ['2001:db8::', 32],
+  ['2002::', 16], // 6to4，可编码 IPv4 目标
+  ['3fff::', 20], // 文档地址
+]) {
+  v6Block.addSubnet(address, prefix, 'ipv6');
+}
+const globalV6 = new net.BlockList();
+globalV6.addSubnet('2000::', 3, 'ipv6');
+
 function isPrivateIp(ip) {
   if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254)
-    );
+    return v4Block.check(ip, 'ipv4');
   }
+  if (!net.isIPv6(ip)) return true;
   const v6 = ip.toLowerCase();
   // IPv4-mapped IPv6（::ffff:127.0.0.1 / ::ffff:7f00:1）：fetch 实际会连到内嵌的
   // IPv4 地址，必须按内嵌地址判定，否则可绕过私网过滤
@@ -65,12 +99,9 @@ function isPrivateIp(ip) {
     }
     return true; // 无法解析的映射形式按私网处理
   }
-  return (
-    v6 === '::' || v6 === '::1' ||
-    v6.startsWith('fe80') || // 链路本地
-    v6.startsWith('fc') || v6.startsWith('fd') || // ULA
-    v6.startsWith('ff') // 组播
-  );
+  // IPv6 仅允许明确的全局单播 2000::/3，并继续排除其中的特殊子段。
+  // 这会覆盖 NAT64 local-use、discard-only 等不断扩充的域外特殊空间。
+  return !globalV6.check(v6, 'ipv6') || v6Block.check(v6, 'ipv6');
 }
 
 async function assertPublicSource(urlStr) {
@@ -153,9 +184,7 @@ class PullManager {
     this.staleStmt = db.prepare(
       "SELECT * FROM pulls WHERE status IN ('queued', 'pulling')",
     );
-    this.findActiveByDedupStmt = db.prepare(
-      "SELECT pull_id FROM pulls WHERE dedup_key = ? AND status IN ('queued', 'pulling') LIMIT 1",
-    );
+    this.findByDedupStmt = db.prepare('SELECT * FROM pulls WHERE dedup_key = ? LIMIT 1');
     this.updateStmt = db.prepare(
       'UPDATE pulls SET status=?, bytes_downloaded=?, error=?, attempts=?, updated_at=? WHERE pull_id=?',
     );
@@ -178,13 +207,27 @@ class PullManager {
         ? null
         : Number(expected_size);
     if (size !== null && (!Number.isFinite(size) || size < 0)) throw bad('expected_size 非法');
-    const dedup = typeof dedup_key === 'string' && dedup_key ? dedup_key.slice(0, 128) : null;
+    const dedup = dedup_key === undefined || dedup_key === null || dedup_key === '' ? null : dedup_key;
+    if (dedup !== null && (typeof dedup !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(dedup))) {
+      throw bad('dedup_key 非法（1~128 位字母数字及 . _ : -）');
+    }
     if (!this.allowPrivate) await assertPublicSource(source_url);
 
-    // 幂等：同一逻辑派发（响应丢失后重试）命中仍在运行的任务，避免重复下载
+    const assertSameRequest = (existing) => {
+      const same =
+        existing.filename === filename &&
+        (existing.expected_sha256 || null) === sha &&
+        (existing.expected_size === null ? null : Number(existing.expected_size)) === size;
+      if (!same) throw bad('dedup_key 已存在但请求参数不一致', 409);
+    };
+
+    // 幂等命中覆盖 queued/pulling/done/failed：响应丢失后重试可能晚于任务终态。
+    // source_url 中的短期签名/exp 可以变化；命中时绝不覆盖或使用新 URL，
+    // 仍严格核对文件名、摘要和大小，避免把同一个键误用于另一份文件。
     if (dedup) {
-      const existing = this.findActiveByDedupStmt.get(dedup);
+      const existing = this.findByDedupStmt.get(dedup);
       if (existing) {
+        assertSameRequest(existing);
         this.log(`[pull] 幂等命中 ${dedup} → ${existing.pull_id}`);
         return existing.pull_id;
       }
@@ -193,7 +236,15 @@ class PullManager {
     const pullId = `p_${crypto.randomBytes(8).toString('hex')}`;
     const fileId = `f_${crypto.randomBytes(8).toString('hex')}`;
     const now = Date.now();
-    this.insertStmt.run(pullId, source_url, filename, sha, size, fileId, now, now, dedup);
+    try {
+      this.insertStmt.run(pullId, source_url, filename, sha, size, fileId, now, now, dedup);
+    } catch (error) {
+      // 多请求并发穿过应用层查询时，以唯一索引为最终裁决。
+      const existing = dedup && this.findByDedupStmt.get(dedup);
+      if (!existing) throw error;
+      assertSameRequest(existing);
+      return existing.pull_id;
+    }
     // 后台执行，不阻塞响应；#run 内部消化所有异常
     this.#run(pullId).catch((e) => this.log(`[pull] ${pullId} 任务异常: ${e.message}`));
     return pullId;
@@ -264,7 +315,12 @@ class PullManager {
 
   #cleanupPartial(pullId) {
     const row = this.get(pullId);
-    if (row) fs.unlink(this.storagePathFor(row.file_id), () => {});
+    if (!row) return Promise.resolve();
+    // 必须等待 unlink 回调：若立刻进入下一次尝试，迟到的异步 unlink 会删掉
+    // 新一轮刚打开/写入的同名文件，表现为偶发 ENOENT 或损坏续传。
+    return new Promise((resolve) => {
+      fs.unlink(this.storagePathFor(row.file_id), () => resolve());
+    });
   }
 
   async #run(pullId, startAttempt = 0) {
@@ -277,7 +333,7 @@ class PullManager {
           await this.#attempt(pullId);
           return;
         } catch (e) {
-          if (e.dropPartial) this.#cleanupPartial(pullId);
+          if (e.dropPartial) await this.#cleanupPartial(pullId);
           lastError = e.message || String(e);
           this.#patch(pullId, { error: lastError });
           this.log(`[pull] ${pullId} 第 ${attempt}/${this.maxAttempts} 次尝试失败: ${lastError}`);
@@ -285,7 +341,7 @@ class PullManager {
       }
       this.#patch(pullId, { status: 'failed', error: lastError });
       // 终态失败清理半成品：总控重派会生成新的 file_id，旧残留没有价值
-      this.#cleanupPartial(pullId);
+      await this.#cleanupPartial(pullId);
       this.log(`[pull] ${pullId} 重试耗尽，标记失败: ${lastError}`);
     } finally {
       this.#release();

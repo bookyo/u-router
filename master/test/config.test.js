@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { describe, test } = require('node:test');
 
 const { sanitizeConfig } = require('../src/config');
+const pkg = require('../package.json');
 
 const base = {
   port: 7000,
@@ -100,4 +101,72 @@ describe('sanitizeConfig（非法配置不会让后台循环失效）', () => {
     assert.ok(Number.isFinite(c.healthTimeoutMs));
     assert.ok(Number.isFinite(c.distributionMaxAttempts) && c.distributionMaxAttempts >= 1);
   });
+
+  test('端口、毫秒超时、计数和 TTL 必须是范围内整数', () => {
+    const c = sanitizeConfig({
+      ...base,
+      port: Infinity,
+      healthTimeoutMs: 250.5,
+      unhealthyAfterFailures: 1.5,
+      offlineAfterFailures: 3.5,
+      recoverySuccesses: 2.2,
+      recoveryPasses: 1.1,
+      defaultTokenTtlSec: 60.5,
+      maxTokenTtlSec: 600.5,
+      distributionMaxAttempts: 2.5,
+      distributionTokenTtlSec: 600.5,
+      distributionStaleSec: 60.5,
+    });
+    for (const key of [
+      'port',
+      'healthTimeoutMs',
+      'unhealthyAfterFailures',
+      'offlineAfterFailures',
+      'recoverySuccesses',
+      'recoveryPasses',
+      'defaultTokenTtlSec',
+      'maxTokenTtlSec',
+      'distributionMaxAttempts',
+      'distributionTokenTtlSec',
+      'distributionStaleSec',
+    ]) {
+      assert.equal(Number.isInteger(c[key]), true, `${key} 应是整数，实际 ${c[key]}`);
+    }
+    assert.ok(c.port >= 1 && c.port <= 65535);
+    assert.doesNotThrow(() => AbortSignal.timeout(c.healthTimeoutMs));
+  });
+
+  test('巨大但有限的间隔、TTL、计数也回退，不触发计时器或日期溢出', () => {
+    const c = sanitizeConfig({
+      ...base,
+      healthCheckIntervalSec: Number.MAX_VALUE,
+      statsPullIntervalSec: Number.MAX_VALUE,
+      passiveCheckIntervalSec: Number.MAX_VALUE,
+      distributorIntervalSec: Number.MAX_VALUE,
+      defaultTokenTtlSec: Number.MAX_SAFE_INTEGER,
+      maxTokenTtlSec: Number.MAX_SAFE_INTEGER,
+      distributionTokenTtlSec: Number.MAX_SAFE_INTEGER,
+      unhealthyAfterFailures: Number.MAX_SAFE_INTEGER - 1,
+      offlineAfterFailures: Number.MAX_SAFE_INTEGER,
+      linksRateLimitPerMin: Number.MAX_SAFE_INTEGER,
+    });
+    for (const key of [
+      'healthCheckIntervalSec',
+      'statsPullIntervalSec',
+      'passiveCheckIntervalSec',
+      'distributorIntervalSec',
+    ]) {
+      assert.ok(c[key] * 1000 <= 2_147_483_647, `${key} 不能让 setInterval 溢出`);
+    }
+    for (const key of ['defaultTokenTtlSec', 'maxTokenTtlSec', 'distributionTokenTtlSec']) {
+      assert.ok(c[key] <= 365 * 86400, `${key} 应有语义上限`);
+      assert.ok(Number.isFinite(Date.now() + c[key] * 1000));
+    }
+    assert.ok(c.offlineAfterFailures > c.unhealthyAfterFailures);
+    assert.ok(c.linksRateLimitPerMin <= 1_000_000);
+  });
+});
+
+test('Node engines 覆盖 undici 7 的真实最低版本', () => {
+  assert.equal(pkg.engines.node, '>=20.18.1');
 });

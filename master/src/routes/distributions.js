@@ -52,6 +52,9 @@ module.exports = function distributionsRouter({ config: cfg }) {
         if (only && !only.includes(t.edge_id)) continue;
         t.status = 'pending';
         t.attempts = 0;
+        t.pull_id = '';
+        t.dedup_key = '';
+        t.bytes = 0;
         t.error = '';
         reset += 1;
       }

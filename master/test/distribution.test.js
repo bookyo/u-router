@@ -20,6 +20,7 @@ const buildEdgeApp = require('../../edge/src/app');
 let connected = false;
 
 before(async () => {
+  process.env.MASTER_ALLOW_PRIVATE_EDGE_URL = 'true';
   try {
     await mongoose.connect('mongodb://127.0.0.1:27017/urouter_test_dist', {
       serverSelectionTimeoutMS: 2000,
@@ -35,6 +36,7 @@ after(async () => {
     await mongoose.connection.dropDatabase();
     await mongoose.disconnect();
   }
+  delete process.env.MASTER_ALLOW_PRIVATE_EDGE_URL;
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -275,6 +277,66 @@ function makeStubEdge(behavior) {
   return { server, posted };
 }
 
+test('创建 PULL 的响应丢失后复用同一 dedup_key，不重复创建逻辑任务', async (t) => {
+  if (!connected) return t.skip('MongoDB 不可用');
+  const src = await makeEdge('edge-src', 'secret-src');
+  const posted = [];
+  let posts = 0;
+  const stub = http.createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/api/pulls') {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      posts += 1;
+      posted.push(JSON.parse(body));
+      if (posts === 1) {
+        // Edge 已读完并接受请求，但返回 pull_id 前连接丢失。
+        req.socket.destroy();
+        return;
+      }
+      res.writeHead(202, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ pull_id: 'same-logical-pull' }));
+    });
+  });
+  await new Promise((r) => stub.listen(0, '127.0.0.1', r));
+  try {
+    await Promise.all([Edge.deleteMany({}), File.deleteMany({}), Distribution.deleteMany({})]);
+    await Edge.create([
+      { edge_id: 'edge-src', base_url: `http://127.0.0.1:${src.port}`, token_secret: 'secret-src' },
+      { edge_id: 'edge-stub', base_url: `http://127.0.0.1:${stub.address().port}`, token_secret: 'x' },
+    ]);
+    const up = await uploadTo(src, crypto.randomBytes(1024), 'dedup.pkg');
+    await File.create({
+      download_id: 'dist-dedup',
+      filename: 'dedup.pkg',
+      size: 1024,
+      sha256: up.sha256,
+      edges: [{ edge_id: 'edge-src', edge_file_id: up.file_id, weight: 100 }],
+    });
+    const cfg = { distributionMaxAttempts: 3, distributionTokenTtlSec: 3600, distributionStaleSec: 3600 };
+    const task = await createDistribution({ downloadId: 'dist-dedup', targets: ['edge-stub'] }, cfg);
+
+    await runRound(cfg); // POST 已到 Edge，但响应丢失
+    let doc = await Distribution.findOne({ task_id: task.task_id }).lean();
+    assert.equal(doc.targets[0].status, 'pending');
+    assert.ok(doc.targets[0].dedup_key, '不确定响应后必须持久化本轮幂等键');
+
+    await runRound(cfg); // 重试同一逻辑请求
+    doc = await Distribution.findOne({ task_id: task.task_id }).lean();
+    assert.equal(posted.length, 2);
+    assert.equal(posted[1].dedup_key, posted[0].dedup_key, '网络重试不得更换 dedup_key');
+    assert.equal(doc.targets[0].status, 'pulling');
+    assert.equal(doc.targets[0].pull_id, 'same-logical-pull');
+  } finally {
+    stub.close();
+    src.server.close();
+  }
+});
+
 test('stale 判定前先查远端：远端已完成则直接完成，不重派（回归）', async (t) => {
   if (!connected) return t.skip('MongoDB 不可用');
   const src = await makeEdge('edge-src', 'secret-src');
@@ -350,10 +412,19 @@ test('远端持续 queued 不刷新 updated_at，超过 stale 窗口后重派（
     );
     // 旧实现对 queued 状态每轮刷新 updated_at → 永远不 stale → 保持 pulling
     await runRound(cfg);
-    const doc = await Distribution.findOne({ task_id: task.task_id }).lean();
+    let doc = await Distribution.findOne({ task_id: task.task_id }).lean();
     assert.equal(doc.targets[0].status, 'pending', 'queued 无进展超时后应重派');
     assert.equal(doc.targets[0].attempts, 1, '本轮只置回 pending，重派在下一轮才计入 attempts');
     assert.equal(doc.targets[0].pull_id, '');
+
+    await runRound(cfg);
+    doc = await Distribution.findOne({ task_id: task.task_id }).lean();
+    assert.equal(stub.posted.length, 2);
+    assert.equal(
+      stub.posted[1].dedup_key,
+      stub.posted[0].dedup_key,
+      'stale 后先用原幂等键向 Edge 对账，不能直接创建新任务',
+    );
   } finally {
     stub.server.close();
     src.server.close();

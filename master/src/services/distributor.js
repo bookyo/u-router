@@ -6,6 +6,7 @@ const File = require('../models/File');
 const Edge = require('../models/Edge');
 const { sign } = require('./token');
 const { isValidId } = require('./validators');
+const { fetchEdge } = require('./networkPolicy');
 
 // 分发编排引擎（总控不过文件字节）：
 // 1. createDistribution：确定源（首个或指定映射）、校验目标、自动发现源文件元数据
@@ -21,10 +22,16 @@ function httpErr(message, status = 400) {
 
 const headersFor = (edgeDoc) => (edgeDoc.api_key ? { 'x-api-key': edgeDoc.api_key } : {});
 
+function dedupKeyFor(taskId, edgeId, attempt) {
+  const readable = `${taskId}:${edgeId}:${attempt}`;
+  if (readable.length <= 128) return readable;
+  return `d_${crypto.createHash('sha256').update(readable).digest('hex')}`;
+}
+
 // 从源 Edge 的文件列表自动发现 sha256 / size / filename
 async function discoverSourceMeta(sourceEdge, sourceFileId) {
   const base = sourceEdge.base_url.replace(/\/+$/, '');
-  const res = await fetch(`${base}/api/files?limit=10000`, {
+  const res = await fetchEdge(`${base}/api/files?limit=10000`, {
     signal: AbortSignal.timeout(5000),
     headers: headersFor(sourceEdge),
   });
@@ -130,7 +137,8 @@ async function runRound(cfg, log = console.log) {
           const sourceUrl = `${sourceEdge.base_url.replace(/\/+$/, '')}/d/${token}`;
 
           t.attempts += 1;
-          const res = await fetch(`${targetEdge.base_url.replace(/\/+$/, '')}/api/pulls`, {
+          if (!t.dedup_key) t.dedup_key = dedupKeyFor(task.task_id, t.edge_id, t.attempts);
+          const res = await fetchEdge(`${targetEdge.base_url.replace(/\/+$/, '')}/api/pulls`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', ...headersFor(targetEdge) },
             body: JSON.stringify({
@@ -140,7 +148,7 @@ async function runRound(cfg, log = console.log) {
               expected_size: task.size || undefined,
               // 稳定幂等键（task:edge:attempt）：同一逻辑派发的重复 POST
               //（响应丢失后重试）在 Edge 端命中仍在运行的同一任务，不重复下载
-              dedup_key: `${task.task_id}:${t.edge_id}:${t.attempts}`,
+              dedup_key: t.dedup_key,
             }),
             signal: AbortSignal.timeout(5000),
           });
@@ -163,7 +171,7 @@ async function runRound(cfg, log = console.log) {
           let p = null;
           let queryError = null;
           try {
-            const res = await fetch(
+            const res = await fetchEdge(
               `${targetEdge.base_url.replace(/\/+$/, '')}/api/pulls/${t.pull_id}`,
               { headers: headersFor(targetEdge), signal: AbortSignal.timeout(5000) },
             );
@@ -209,6 +217,7 @@ async function runRound(cfg, log = console.log) {
               else {
                 t.status = 'pending'; // Edge 内部已重试过，重新派发一轮
                 t.pull_id = '';
+                t.dedup_key = '';
               }
               t.updated_at = new Date();
             }
@@ -220,6 +229,8 @@ async function runRound(cfg, log = console.log) {
               t.error = (queryError && queryError.message) || `拉取超过 ${staleSec}s 无进展`;
               t.status = t.attempts >= cfg.distributionMaxAttempts ? 'failed' : 'pending';
               t.pull_id = '';
+              // 保留 dedup_key：下轮先通过幂等 POST 找回目标 Edge 上的原任务。
+              // 若原任务已终态，Edge 仍返回同一 pull_id，随后按真实终态处理。
               t.updated_at = new Date();
               log(`[distribute] ${task.task_id} → ${t.edge_id} stale：${t.status === 'failed' ? '判失败' : '重派'}`);
             } else if (queryError) {
@@ -270,4 +281,4 @@ function startDistributorLoop(cfg, log = console.log) {
   return timer;
 }
 
-module.exports = { createDistribution, runRound, startDistributorLoop, discoverSourceMeta };
+module.exports = { createDistribution, runRound, startDistributorLoop, discoverSourceMeta, dedupKeyFor };

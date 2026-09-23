@@ -21,6 +21,9 @@ async function buildHealthPayload({ config: cfg, db }) {
     status: 'ok',
     edge_id: cfg.edgeId,
     version: cfg.version,
+    // Node 直传可在连接 close 时确认完整字节数；X-Accel 只完成内部重定向，
+    // 无法观察 Nginx 后续是否完整送达，总控据此跳过完成率被动判定。
+    delivery_completion_observable: cfg.enableXAccel !== true,
     uptime_sec: Math.floor(process.uptime()),
     now: new Date().toISOString(),
     load: { m1, m5, m15 },

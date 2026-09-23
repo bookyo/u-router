@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>市场搜索 · 在线逛店</title>
+<style>
+:root{--bg:#0d0d10;--panel:#16161a;--line:#26262c;--fg:#ccc;--dim:#666;--acc:#5cf;--ok:#5c6;--warn:#e3b341}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,Menlo,monospace;padding:16px}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:18px;color:var(--acc);margin-bottom:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0}
+input,select,button{background:#111;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:5px 10px;font:12px -apple-system,Menlo,monospace;outline:none}
+input:focus,select:focus{border-color:var(--acc)}
+button{cursor:pointer;color:var(--acc)}button:hover{border-color:var(--acc)}
+button.pri{background:#152a3d}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{color:var(--dim);text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+th:hover{color:var(--acc)}
+td{padding:5px 8px;border-bottom:1px solid #1a1a1f}
+tr:hover td{background:#1a1a22}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.opt{font-size:11px;color:#8cc8f0}
+.dim{color:var(--dim)}
+.city{font-size:11px;color:var(--dim)}
+#pager{display:flex;gap:6px;justify-content:center;align-items:center;margin-top:10px}
+#pager button{padding:3px 10px}
+#pager .cur{background:#152a3d;color:var(--acc)}
+#count{font-size:12px;color:var(--dim);margin:8px 0}
+/* ---------- 顶部页签 ---------- */
+.tabs{display:flex;gap:8px;margin-bottom:12px}
+.tabs button{padding:7px 18px;font-size:13px;border-radius:6px 6px 0 0;border-bottom:2px solid transparent;color:var(--dim)}
+.tabs button.on{color:var(--acc);border-bottom-color:var(--acc);background:#141820}
+/* ---------- 在线逛店 ---------- */
+#mapsGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.mapCard{background:#14141a;border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:pointer;transition:border-color .15s}
+.mapCard:hover{border-color:var(--acc)}
+.mapCard img{width:100%;height:150px;object-fit:cover;display:block;image-rendering:auto;filter:brightness(.9)}
+.mapCard .mc-bar{padding:8px 10px;display:flex;justify-content:space-between;align-items:center}
+.mapCard .mc-name{color:var(--acc);font-weight:600}
+.mapCard .mc-meta{font-size:11px;color:var(--dim)}
+#mapView .mv-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+#mapView .mv-title{color:var(--acc);font-weight:600;font-size:15px}
+.mv-hint{font-size:11px;color:var(--dim)}
+.mv-body{display:flex;gap:12px;align-items:flex-start}
+.map-frame{position:relative;flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#000;user-select:none}
+.map-frame img.mv-map{width:100%;display:block;cursor:crosshair}
+.shop-dot{position:absolute;width:10px;height:10px;border-radius:50%;background:#4aa3ff;border:1px solid #0d2740;transform:translate(-50%,-50%);cursor:pointer;z-index:2}
+.shop-dot:hover{background:#ffd34a;box-shadow:0 0 0 4px rgba(255,211,74,.25);z-index:3}
+.map-pin{position:absolute;width:22px;height:22px;transform:translate(-50%,-100%);z-index:4;pointer-events:none;filter:drop-shadow(0 2px 3px #000);font-size:20px;line-height:1;color:#ff5c5c;text-shadow:0 0 4px #000}
+.map-star{position:absolute;transform:translate(-50%,-50%);color:#ffd34a;font-size:20px;text-shadow:0 0 6px #000,0 0 2px #000;z-index:4;pointer-events:none}
+.near-panel{width:280px;flex-shrink:0}
+.near-panel h3{font-size:13px;color:var(--acc);margin-bottom:6px}
+.near-shop{border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:6px;cursor:pointer;background:#14141a}
+.near-shop:hover{border-color:var(--acc)}
+.near-shop .ns-title{color:var(--fg);font-weight:600;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.near-shop .ns-meta{font-size:11px;color:var(--dim);display:flex;justify-content:space-between;margin-top:2px}
+.near-shop .ns-dist{color:var(--warn)}
+/* 店铺详情 */
+#shopView .sv-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.sv-title{color:var(--acc);font-weight:600;font-size:15px}
+.sv-body{display:flex;gap:12px;align-items:flex-start}
+.sv-items{flex:1;min-width:0}
+.sv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.it-cell{border:1px solid var(--line);border-radius:6px;padding:8px;background:#14141a;cursor:default}
+.it-cell:hover{border-color:var(--acc);background:#171d28}
+.it-cell .ic-top{display:flex;gap:8px;align-items:flex-start}
+.it-cell img,.it-cell .noicon{width:28px;height:28px;flex-shrink:0;object-fit:contain;background:#0a0a0d;border-radius:4px}
+.it-cell .noicon{display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--dim)}
+.it-cell .ic-name{font-size:12px;line-height:1.3;word-break:break-all}
+.it-cell .ic-meta{margin-top:6px;display:flex;justify-content:space-between;font-size:11px}
+.it-cell .ic-price{color:var(--ok)}
+/* 位置卡（GPT 带路） */
+.loc-card{width:300px;flex-shrink:0;background:#14141a;border:1px solid var(--line);border-radius:8px;padding:10px}
+.loc-card .lc-kicker{font-size:11px;color:var(--dim)}
+.loc-card h3{color:var(--acc);font-size:15px;margin:2px 0 6px}
+.loc-card .lc-coord{font-size:12px;margin-bottom:8px}
+.loc-map{position:relative;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-bottom:8px}
+.loc-map img{width:100%;display:block}
+.qg-head{display:flex;gap:8px;align-items:center;margin:10px 0 6px}
+.qg-icon{width:28px;height:28px;border-radius:50%;background:#152a3d;display:flex;align-items:center;justify-content:center;font-size:14px}
+.qg-kicker{font-size:10px;color:var(--warn)}
+.qg-head h4{font-size:13px;color:var(--fg)}
+.qg-steps{list-style:none;margin:6px 0}
+.qg-steps li{display:flex;gap:8px;margin:6px 0;font-size:11.5px;align-items:flex-start}
+.qg-num{width:16px;height:16px;flex-shrink:0;border-radius:50%;background:#1d2836;color:var(--acc);font-size:10px;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.copy-cmd{width:100%;text-align:left;background:#10151d;border:1px dashed #2e4a63;border-radius:6px;padding:8px 10px;color:var(--fg);font-size:12px;line-height:1.5}
+.copy-cmd:hover{border-color:var(--acc)}
+.copy-cmd .cc-act{display:block;margin-top:4px;color:var(--acc);font-size:11px}
+.qg-note{font-size:10.5px;color:var(--dim);margin-top:6px}
+/* 物品悬浮卡 */
+#tip{position:fixed;z-index:99;display:none;width:260px;background:#101418;border:1px solid var(--acc);border-radius:8px;padding:10px;box-shadow:0 6px 24px rgba(0,0,0,.6);pointer-events:none}
+#tip .tip-top{display:flex;gap:10px;align-items:flex-start;margin-bottom:6px}
+#tip img,#tip .noicon{width:44px;height:44px;flex-shrink:0;object-fit:contain;background:#0a0a0d;border-radius:6px}
+#tip .noicon{display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--dim)}
+#tip .tip-name{font-weight:600;color:var(--acc);font-size:13px}
+#tip .tip-meta{font-size:11px;margin-top:2px}
+#tip .tip-desc{font-size:11px;color:#9aa4b0;white-space:pre-line;max-height:180px;overflow-y:auto;line-height:1.45}
+.hidden{display:none!important}
+@media(max-width:860px){.mv-body,.sv-body{flex-direction:column}.near-panel,.loc-card{width:100%}}
+@media(max-width:640px){.row{flex-direction:column;align-items:stretch}input,select{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛒 市场工具 <span class="dim" style="font-size:12px" id="stats"></span></h1>
+  <div class="tabs">
+    <button id="tabSearch" class="on" onclick="switchTab('search')">🔍 商品搜索</button>
+    <button id="tabBrowse" onclick="switchTab('browse')">🏪 在线逛店</button>
+  </div>
+
+  <!-- ==================== 商品搜索（原有功能） ==================== -->
+  <div id="viewSearch">
+    <div class="card">
+      <div class="row">
+        <input id="q" placeholder="物品名（模糊）" style="flex:1;min-width:140px" onkeydown="if(event.key==='Enter')go(1)">
+        <select id="city">
+          <option value="">全城市</option><option>普隆德拉（首都）</option><option>吉芬</option><option>梦罗克</option><option>斐扬</option>
+        </select>
+        <select id="type">
+          <option value="">全部类型</option><option value="4">装备</option><option value="0">消耗品</option>
+        </select>
+        <select id="opt">
+          <option value="">全词条</option>
+          <option value="3">STR</option><option value="4">AGI</option><option value="5">VIT</option>
+          <option value="6">INT</option><option value="7">DEX</option><option value="8">LUK</option>
+          <option value="1">MaxHP</option><option value="2">MaxSP</option><option value="9">MaxHP%</option>
+          <option value="10">MaxSP%</option><option value="20">ATK</option><option value="21">MATK</option>
+          <option value="18">DEF</option><option value="19">MDEF</option><option value="22">FLEE</option>
+          <option value="24">CRIT</option><option value="23">HIT</option>
+        </select>
+      </div>
+      <div class="row">
+        <span class="dim">价格区间</span>
+        <input id="min" type="number" placeholder="最低" style="width:90px">
+        <span class="dim">~</span>
+        <input id="max" type="number" placeholder="最高" style="width:90px">
+        <select id="order">
+          <option value="price_asc">价格 ↑</option><option value="price_desc">价格 ↓</option>
+        </select>
+        <select id="ps"><option value="30">30条/页</option><option value="50">50条/页</option><option value="100">100条/页</option></select>
+        <button class="pri" onclick="go(1)">🔍 搜索</button>
+        <button onclick="reset()">清空</button>
+      </div>
+    </div>
+    <div class="card">
+      <div id="count"></div>
+      <div style="overflow-x:auto">
+        <table id="tbl">
+          <thead><tr>
+            <th onclick="sort('name')">物品 ↕</th>
+            <th onclick="sort('price')">价格 ↕</th>
+            <th onclick="sort('qty')">数量 ↕</th>
+            <th>词条</th>
+            <th>城市</th>
+            <th>摊位</th>
+          </tr></thead>
+          <tbody id="tb"></tbody>
+        </table>
+      </div>
+      <div id="pager"></div>
+    </div>
+  </div>
+
+  <!-- ==================== 在线逛店 ==================== -->
+  <div id="viewBrowse" class="hidden">
+    <div id="mapsGrid"></div>
+
+    <div id="mapView" class="card hidden">
+      <div class="mv-top">
+        <button onclick="showMaps()">← 返回</button>
+        <span class="mv-title" id="mvTitle"></span>
+        <span class="mv-hint">💡 点击地图任意位置定位，查看附近店铺；蓝点是店铺，可直接点击</span>
+      </div>
+      <div class="mv-body">
+        <div class="map-frame" id="mapFrame">
+          <img class="mv-map" id="mvImg" alt="地图">
+          <div id="dotLayer"></div>
+          <div id="pinLayer"></div>
+        </div>
+        <div class="near-panel">
+          <h3 id="nearTitle">附近店铺</h3>
+          <div id="nearList"><p class="dim" style="font-size:11px">先在地图上点一个位置</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="shopView" class="card hidden">
+      <div class="sv-top">
+        <button onclick="backToMap()">← 返回地图</button>
+        <span class="sv-title" id="svTitle"></span>
+        <span class="dim" id="svMeta"></span>
+      </div>
+      <div class="sv-body">
+        <div class="sv-items"><div class="sv-grid" id="svGrid"></div></div>
+        <div id="locCard"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="tip">
+  <div class="tip-top">
+    <img id="tipIcon" alt=""><span class="noicon hidden" id="tipNoIcon"></span>
+    <div><div class="tip-name" id="tipName"></div><div class="tip-meta" id="tipMeta"></div></div>
+  </div>
+  <div class="tip-desc" id="tipDesc"></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const fmt = (n) => (n || 0).toLocaleString();
+const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+/* ==================== 页签切换 ==================== */
+function switchTab(t) {
+  $('#tabSearch').classList.toggle('on', t === 'search');
+  $('#tabBrowse').classList.toggle('on', t === 'browse');
+  $('#viewSearch').classList.toggle('hidden', t !== 'search');
+  $('#viewBrowse').classList.toggle('hidden', t !== 'browse');
+  if (t === 'browse' && !BROWSE.loaded) initBrowse();
+}
+
+/* ==================== 在线逛店 ==================== */
+// 地图真值（坐标上限与图片来自 ratemyserver 资产，LastROLTSD maps.ts 同源）
+const MAPS = {
+  prontera: { name: '普隆德拉（首都）', maxX: 312, maxY: 392, img: '/static/maps/prontera_re.gif' },
+  morocc:   { name: '梦罗克',           maxX: 320, maxY: 320, img: '/static/maps/morocc_re.gif' },
+  payon:    { name: '斐扬',             maxX: 300, maxY: 360, img: '/static/maps/payon.gif' },
+  geffen:   { name: '吉芬',             maxX: 240, maxY: 240, img: '/static/maps/geffen.gif' },
+};
+const BROWSE = { loaded: false, shops: [], meta: {} };
+const iconUrl = (id, name) => `/static/icons/${/卡片$/.test(name || '') ? 'card' : id}.gif`;
+const pct = (map, x, y) => ({ left: Math.max(0, Math.min(100, x / map.maxX * 100)), top: Math.max(0, Math.min(100, 100 - y / map.maxY * 100)) });
+
+async function initBrowse() {
+  try {
+    const r = await fetch('/api/market/shops');
+    const d = await r.json();
+    BROWSE.shops = d.shops || [];
+  } catch (e) { BROWSE.shops = []; }
+  BROWSE.loaded = true;
+  const counts = {};
+  for (const s of BROWSE.shops) if (MAPS[s.map_name]) counts[s.map_name] = (counts[s.map_name] || 0) + 1;
+  $('#mapsGrid').innerHTML = Object.entries(MAPS).map(([code, m]) => `
+    <div class="mapCard" onclick="openMap('${code}')">
+      <img src="${m.img}" alt="${m.name}" loading="lazy">
+      <div class="mc-bar"><span class="mc-name">${m.name}</span><span class="mc-meta">${counts[code] || 0} 家店</span></div>
+    </div>`).join('');
+}
+
+function showMaps() {
+  $('#mapView').classList.add('hidden'); $('#shopView').classList.add('hidden');
+  $('#mapsGrid').classList.remove('hidden');
+}
+
+function openMap(code) {
+  const m = MAPS[code]; if (!m) return;
+  CURMAP = code;
+  $('#mapsGrid').classList.add('hidden'); $('#shopView').classList.add('hidden');
+  $('#mapView').classList.remove('hidden');
+  $('#mvTitle').textContent = `${m.name} · ${code}`;
+  $('#mvImg').src = m.img;
+  $('#nearTitle').textContent = '附近店铺';
+  $('#nearList').innerHTML = '<p class="dim" style="font-size:11px">先在地图上点一个位置</p>';
+  // 店铺蓝点
+  const dots = BROWSE.shops.filter((s) => s.map_name === code);
+  $('#dotLayer').innerHTML = dots.map((s, i) => {
+    const p = pct(m, s.shop_x || 0, s.shop_y || 0);
+    return `<span class="shop-dot" style="left:${p.left}%;top:${p.top}%" title="${esc(s.shop_title)}（${s.items}件）"
+      onclick="event.stopPropagation();openShop(${s.owner_aid},'${esc(s.shop_title).replace(/'/g,'&#39;')}',${s.shop_x || 0},${s.shop_y || 0})"></span>`;
+  }).join('');
+  $('#pinLayer').innerHTML = '';
+}
+let CURMAP = null;
+
+// 地图点击 → 定位 + 附近店铺（切比雪夫距离，RO 走格）
+$('#mapFrame').addEventListener('click', (e) => {
+  const m = MAPS[CURMAP]; if (!m) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const left = (e.clientX - r.left) / r.width * 100, top = (e.clientY - r.top) / r.height * 100;
+  const x = Math.round(left / 100 * m.maxX), y = Math.round((100 - top) / 100 * m.maxY);
+  $('#pinLayer').innerHTML = `<span class="map-pin" style="left:${left}%;top:${top}%">📍</span>`;
+  $('#nearTitle').textContent = `附近店铺（定位 ${x},${y}）`;
+  const near = BROWSE.shops.filter((s) => s.map_name === CURMAP)
+    .map((s) => ({ s, d: Math.max(Math.abs((s.shop_x || 0) - x), Math.abs((s.shop_y || 0) - y)) }))
+    .sort((a, b) => a.d - b.d).slice(0, 15);
+  $('#nearList').innerHTML = near.length ? near.map(({ s, d }) => `
+    <div class="near-shop" onclick="openShop(${s.owner_aid},'${esc(s.shop_title).replace(/'/g,'&#39;')}',${s.shop_x || 0},${s.shop_y || 0})">
+      <div class="ns-title">${esc(s.shop_title)}</div>
+      <div class="ns-meta"><span>${s.items} 件 · 低至 ${fmt(s.minPrice)}z</span><span class="ns-dist">距离 ${d} 格</span></div>
+    </div>`).join('') : '<p class="dim" style="font-size:11px">这附近没有店铺记录</p>';
+});
+
+function backToMap() { $('#shopView').classList.add('hidden'); $('#mapView').classList.remove('hidden'); }
+
+// 打开店铺：物品列表 + 位置卡
+async function openShop(aid, title, x, y) {
+  $('#mapView').classList.add('hidden'); $('#shopView').classList.remove('hidden');
+  const s = BROWSE.shops.find((t) => t.owner_aid === aid && t.shop_title === title) || { city: '', map_name: CURMAP, owner_name: '' };
+  const m = MAPS[s.map_name] || MAPS.prontera;
+  $('#svTitle').textContent = `「${title}」`;
+  $('#svMeta').textContent = `店主 ${s.owner_name || '?'} · ${s.city || m.name} (${x},${y})`;
+  $('#svGrid').innerHTML = '<p class="dim">加载中…</p>';
+  renderLocCard(m, s.map_name, x, y, title);
+  let items = [];
+  try { items = (await (await fetch(`/api/market/shop?aid=${aid}&title=${encodeURIComponent(title)}`)).json()).items || []; } catch (_) {}
+  // 拉物品名/描述（悬停卡用）
+  const needMeta = items.map((i) => i.ITID).filter((id) => !BROWSE.meta[id]);
+  if (needMeta.length) {
+    try {
+      const mm = await (await fetch('/api/market/itemmeta?ids=' + needMeta.slice(0, 600).join(','))).json();
+      Object.assign(BROWSE.meta, mm);
+    } catch (_) {}
+  }
+  $('#svGrid').innerHTML = items.map((i) => {
+    const nm = i.name || (BROWSE.meta[i.ITID] && BROWSE.meta[i.ITID].n) || ('#' + i.ITID);
+    return `<div class="it-cell" data-itid="${i.ITID}" data-name="${esc(nm)}" data-price="${i.price}" data-qty="${i.qty}"
+      data-opts="${esc(i.opt_labels || '')}">
+      <div class="ic-top">
+        <img src="${iconUrl(i.ITID, nm)}" loading="lazy" onerror="this.outerHTML='&lt;span class=noicon&gt;#${i.ITID}&lt;/span&gt;'">
+        <span class="ic-name">${esc(nm)}</span>
+      </div>
+      <div class="ic-meta"><span class="ic-price">${fmt(i.price)}z</span><span class="dim">×${i.qty}</span></div>
+    </div>`;
+  }).join('') || '<p class="dim">该店无商品记录</p>';
+}
+
+// 位置卡：小地图 + 星标 + GPT 带路（文案与 LastROLTSD 前端一致）
+function renderLocCard(m, code, x, y, title) {
+  const p = pct(m, x, y);
+  const cmd = `请带我去 ${code} ${x} ${y} 这个坐标`;
+  $('#locCard').innerHTML = `
+  <div class="loc-card">
+    <p class="lc-kicker">地图定位 / ${code}</p>
+    <h3>${m.name}</h3>
+    <p class="lc-coord">商人坐标：<strong>${x}，${y}</strong></p>
+    <div class="loc-map"><img src="${m.img}" alt="${m.name}地图"><span class="map-star" style="left:${p.left}%;top:${p.top}%">★</span></div>
+    <p class="qg-note" style="margin-bottom:6px">★ 为「${esc(title)}」位置，坐标来自市场记录。</p>
+    <div class="qg-head"><span class="qg-icon">🧭</span><div><p class="qg-kicker">GPT 带路</p><h4>快捷前往</h4></div></div>
+    <ol class="qg-steps">
+      <li><span class="qg-num">1</span><p>点击聊天框右下角的<strong>蓝色小点按钮</strong>，在弹出的菜单中选择 <strong>GPT</strong> 频道。</p></li>
+      <li><span class="qg-num">2</span><p>点击下方指令框<strong>一键复制</strong>，粘贴到 GPT 频道发送，即可自动前往商人位置。</p></li>
+    </ol>
+    <button class="copy-cmd" onclick="copyCmd(this)" data-cmd="${esc(cmd)}">
+      ${esc(cmd)}
+      <span class="cc-act">📋 点击复制</span>
+    </button>
+    <p class="qg-note">ℹ️ 地图名为英文代码（如 ${code}），坐标与上方星标一致。</p>
+  </div>`;
+}
+async function copyCmd(btn) {
+  const t = btn.dataset.cmd;
+  let ok = false;
+  try { await navigator.clipboard.writeText(t); ok = true; } catch (_) {
+    const el = document.createElement('input'); el.value = t; document.body.appendChild(el); el.select();
+    try { ok = document.execCommand('copy'); } catch (_) {} el.remove();
+  }
+  const act = btn.querySelector('.cc-act');
+  if (act) { act.textContent = ok ? '✅ 已复制' : '❌ 复制失败'; setTimeout(() => (act.textContent = '📋 点击复制'), 1500); }
+}
+
+/* ---------- 物品悬浮卡 ---------- */
+const tip = $('#tip');
+$('#viewBrowse').addEventListener('mouseover', (e) => {
+  const cell = e.target.closest('.it-cell'); if (!cell) { tip.style.display = 'none'; return; }
+  const id = +cell.dataset.itid, nm = cell.dataset.name;
+  const meta = BROWSE.meta[id] || {};
+  $('#tipIcon').src = iconUrl(id, nm);
+  $('#tipIcon').style.display = ''; $('#tipNoIcon').classList.add('hidden');
+  $('#tipIcon').onerror = () => { $('#tipIcon').style.display = 'none'; $('#tipNoIcon').classList.remove('hidden'); $('#tipNoIcon').textContent = '#' + id; };
+  $('#tipName').textContent = nm;
+  $('#tipMeta').innerHTML = `<span style="color:var(--ok)">${fmt(+cell.dataset.price)}z</span> · ×${cell.dataset.qty}${cell.dataset.opts ? ' · ' + esc(cell.dataset.opts).replace(/\|/g, ' · ') : ''}`;
+  $('#tipDesc').textContent = meta.d || '（暂无描述）';
+  tip.style.display = 'block';
+  moveTip(e);
+});
+$('#viewBrowse').addEventListener('mousemove', (e) => { if (tip.style.display === 'block') moveTip(e); });
+$('#viewBrowse').addEventListener('mouseleave', () => (tip.style.display = 'none'));
+function moveTip(e) {
+  const w = 272, h = tip.offsetHeight || 200;
+  let x = e.clientX + 16, y = e.clientY + 12;
+  if (x + w > innerWidth) x = e.clientX - w - 12;
+  if (y + h > innerHeight) y = e.clientY - h - 12;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+
+/* ==================== 商品搜索（原有逻辑） ==================== */
+let curPage = 1, totalPages = 1;
+async function go(page) {
+  curPage = page || 1;
+  const p = new URLSearchParams();
+  if ($('#q').value.trim()) p.set('q', $('#q').value.trim());
+  if ($('#city').value) p.set('city', $('#city').value);
+  if ($('#type').value) p.set('type', $('#type').value);
+  if ($('#opt').value) p.set('opt', $('#opt').value);
+  if ($('#min').value) p.set('min', $('#min').value);
+  if ($('#max').value) p.set('max', $('#max').value);
+  p.set('order', $('#order').value);
+  p.set('limit', $('#ps').value);
+  const r = await fetch('/api/market/search?' + p.toString());
+  const d = await r.json();
+  const items = d.items || [];
+  const perPage = +$('#ps').value;
+  totalPages = Math.ceil(items.length / perPage) || 1;
+  const start = (curPage - 1) * perPage;
+  const pageItems = items.slice(start, start + perPage);
+  $('#count').textContent = `共 ${items.length} 条结果（第 ${curPage}/${totalPages} 页）`;
+  $('#tb').innerHTML = pageItems.map((i) => {
+    const opts = i.opt_labels ? `<span class="opt">${i.opt_labels.replace(/\|/g, ' · ')}</span>` : '<span class="dim">—</span>';
+    return `<tr>
+      <td>${i.name || '#' + i.ITID}</td>
+      <td class="num">${fmt(i.price)}z</td>
+      <td class="num">×${i.qty}</td>
+      <td>${opts}</td>
+      <td><span class="city">${i.city || ''}</span></td>
+      <td><span class="dim">(${i.shop_x || '?'},${i.shop_y || '?'})</span></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="dim" style="text-align:center;padding:20px">无结果</td></tr>';
+  renderPager();
+}
+function renderPager() {
+  let h = '';
+  if (totalPages > 1) {
+    if (curPage > 1) h += `<button onclick="go(${curPage - 1})">‹</button>`;
+    const s = Math.max(1, curPage - 3), e = Math.min(totalPages, s + 6);
+    for (let i = s; i <= e; i++) h += `<button class="${i === curPage ? 'cur' : ''}" onclick="go(${i})">${i}</button>`;
+    if (curPage < totalPages) h += `<button onclick="go(${curPage + 1})">›</button>`;
+  }
+  $('#pager').innerHTML = h;
+}
+function sort(col) {
+  const cur = $('#order').value;
+  if (col === 'price') $('#order').value = cur === 'price_asc' ? 'price_desc' : 'price_asc';
+  go(1);
+}
+function reset() {
+  $('#q').value = ''; $('#city').value = ''; $('#type').value = '';
+  $('#opt').value = ''; $('#min').value = ''; $('#max').value = '';
+  $('#order').value = 'price_asc';
+  go(1);
+}
+
+// 初始：搜索默认 + 统计
+go(1);
+fetch('/api/market/stats').then(r => r.json()).then(d => {
+  $('#stats').textContent = `（${d.total || 0} 条商品 · 更新于 ${d.lastScraped ? d.lastScraped.slice(0, 16).replace('T', ' ') : '未爬取'}）`;
+});
+</script>
+</body>
+</html>

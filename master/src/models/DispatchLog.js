@@ -3,7 +3,7 @@
 const mongoose = require('mongoose');
 
 // 总控“分配量”分钟桶：链接每被分发一次 +1。
-// 与 Edge 上报的“实际请求量”对比得到 delivery_ratio，用于被动健康检测。
+// 与 Edge 上报的“完整下载量”对比得到 delivery_ratio，用于被动健康检测。
 const dispatchLogSchema = new mongoose.Schema({
   minute: { type: Date, required: true }, // 分钟起点
   edge_id: { type: String, required: true },

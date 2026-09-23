@@ -21,6 +21,9 @@ const edgeSchema = new mongoose.Schema(
     },
     enabled: { type: Boolean, default: true },
     health: {
+      // 每次主动探活计数变化时递增；主动/被动状态迁移以此做版本 CAS，
+      // 避免两个引擎分别基于不同快照互相覆盖。
+      revision: { type: Number, default: 0 },
       last_check_at: Date,
       last_ok_at: Date,
       latency_ms: Number,

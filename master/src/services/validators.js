@@ -1,6 +1,7 @@
 'use strict';
 
 const net = require('node:net');
+const { isNonPublicIp } = require('./networkPolicy');
 
 // 入参校验与规范化。之前 PATCH 直接 $set 用户输入（Mongoose update 默认不跑
 // validators），status/weight 可以写入任意值——负权重会抵消加权抽样的总权重，
@@ -18,28 +19,6 @@ const isHttpUrl = (v) => typeof v === 'string' && HTTP_URL_RE.test(v);
 
 // base_url 是总控主动 fetch 的目标（探活/拉统计/派发），默认只允许公网地址，
 // 防止管理接口被滥用探测内网与云元数据端点；内网部署显式放行。
-function isNonPublicIp(ip) {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254)
-    );
-  }
-  const v6 = String(ip).toLowerCase();
-  if (v6.startsWith('::ffff:')) {
-    const tail = v6.slice(7);
-    if (net.isIPv4(tail)) return isNonPublicIp(tail);
-    return true; // 映射形式一律按非公网处理
-  }
-  return (
-    v6 === '::' || v6 === '::1' || v6.startsWith('fe80') || v6.startsWith('fc') ||
-    v6.startsWith('fd') || v6.startsWith('ff')
-  );
-}
-
 function privateEdgeUrlError(url) {
   if (process.env.MASTER_ALLOW_PRIVATE_EDGE_URL === 'true') return null;
   let u;

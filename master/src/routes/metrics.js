@@ -9,7 +9,7 @@ const { allEdgesDelivery, fileDelivery, pickWindow } = require('../services/metr
 module.exports = function metricsRouter({ config: cfg }) {
   const router = express.Router();
 
-  // 各 Edge 的分配量 / 实际请求量 / delivery_ratio（一次聚合，无 N+1）
+  // 各 Edge 的分配量 / 完整交付量 / delivery_ratio（一次聚合，无 N+1）
   router.get(
     '/api/v1/metrics/edges',
     ah(async (req, res) => {
@@ -18,7 +18,14 @@ module.exports = function metricsRouter({ config: cfg }) {
       const [edges, perEdge] = await Promise.all([Edge.find().lean(), allEdgesDelivery(w.sec)]);
       return res.json(
         edges.map((e) => {
-          const d = perEdge.get(e.edge_id) || { dispatch: 0, requests: 0, s2xx: 0, ratio: null };
+          const d = perEdge.get(e.edge_id) || {
+            dispatch: 0,
+            requests: 0,
+            s2xx: 0,
+            downloads_started: 0,
+            downloads_completed: 0,
+            ratio: null,
+          };
           return {
             edge_id: e.edge_id,
             status: e.status,
@@ -26,6 +33,8 @@ module.exports = function metricsRouter({ config: cfg }) {
             dispatch: d.dispatch,
             requests: d.requests,
             s2xx: d.s2xx,
+            downloads_started: d.downloads_started,
+            downloads_completed: d.downloads_completed,
             ratio: d.ratio === null ? null : Number(d.ratio.toFixed(4)),
             health: {
               latency_ms: e.health?.latency_ms ?? null,

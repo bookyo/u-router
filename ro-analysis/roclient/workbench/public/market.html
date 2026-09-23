@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>爬店标签 · 工作台</title>
+<style>
+:root{--bg:#111;--panel:#1b1b1f;--line:#2a2a30;--fg:#ddd;--dim:#888;--acc:#6cf;--ok:#6f6;--warn:#f96}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:13px/1.6 Menlo,monospace;margin:0;padding:14px}
+h2{margin:0 0 4px;font-size:15px}h3{margin:10px 0 6px;font-size:13px;color:var(--acc)}
+a{color:var(--acc)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;max-width:920px;margin:0 auto 12px}
+input,button{background:#151518;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:6px 10px;font:12px Menlo,monospace}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.pri{background:#1d3a52;border-color:#2d5a82}
+.tag{padding:1px 8px;border-radius:3px;font-size:11px}
+.s-run{background:rgba(255,200,60,.15);color:#fc6}.s-done{background:rgba(60,200,90,.15);color:var(--ok)}
+.s-err{background:rgba(255,90,90,.15);color:var(--warn)}.s-idle{background:#222;color:var(--dim)}
+.logbox{background:#0d0d10;border:1px solid var(--line);border-radius:4px;padding:6px;max-height:300px;overflow:auto;font-size:11px;white-space:pre-wrap}
+.dim{color:var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border-bottom:1px solid var(--line);padding:4px 6px;text-align:left}
+th{color:var(--dim);font-weight:400}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>🏪 爬店标签 <span class="dim">（设置账号密码 → 自动爬四城 → SQLite 全量覆盖）</span></h2>
+  <div class="dim" style="margin-bottom:8px"><a href="/">← 返回工作台</a> ｜ 普隆德拉(全城)/吉芬/梦罗克/斐扬 ｜ 约 15-20 分钟 ｜ 完成后 /api/market/search 可查</div>
+  <div>
+    账号 <input id="acc" style="width:130px"> 密码 <input id="pw" type="password" style="width:130px">
+    角色 slot <input id="slot" type="number" value="0" style="width:50px">
+    <button class="pri" onclick="saveCfg()">💾 保存</button>
+    <button class="pri" onclick="startScan()">▶ 开始爬店</button>
+    <button onclick="stopScan()">⏹ 停止</button>
+    <span class="dim" id="hint"></span>
+  </div>
+  <div style="margin-top:8px">状态：<span id="st" class="tag s-idle">idle</span>
+    <span class="dim" id="last"></span></div>
+  <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px">
+    ⏰ 定时爬店
+    <input type="checkbox" id="schedOn" style="vertical-align:-2px">
+    <span>每</span>
+    <select id="schedIv" style="background:#151518;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:4px 6px;font:12px Menlo,monospace">
+      <option value="30">30 分钟</option><option value="60">1 小时</option><option value="120">2 小时</option>
+      <option value="240">4 小时</option><option value="360">6 小时</option><option value="720">12 小时</option>
+    </select>
+    <span>自动上号爬店</span>
+    <button class="pri" onclick="saveSchedule()">💾 保存定时</button>
+    <span class="dim" id="schedHint"></span>
+  </div>
+</div>
+<div class="card">
+  <h3>实时日志</h3>
+  <div id="logs" class="logbox dim">开始爬店后显示</div>
+</div>
+<div class="card">
+  <h3>快速查询（示例）</h3>
+  <div>
+    <input id="q" placeholder="物品名或留空" style="width:150px">
+    <select id="city"><option value="">全城市</option><option>普隆德拉（首都）</option><option>吉芬</option><option>梦罗克</option><option>斐扬</option></select>
+    <select id="opt"><option value="">全词条</option><option value="3">STR</option><option value="4">AGI</option><option value="5">VIT</option><option value="6">INT</option><option value="7">DEX</option><option value="8">LUK</option><option value="1">MaxHP</option><option value="2">MaxSP</option></select>
+    <select id="order"><option value="price_asc">价格↑</option><option value="price_desc">价格↓</option></select>
+    <button onclick="doSearch()">🔍 搜索</button>
+  </div>
+  <div id="results" style="margin-top:8px"></div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const api = async (p, opt) => {
+  const o = opt || {};
+  const init = { method: o.method || 'GET' };
+  if (init.method !== 'GET') { init.headers = {'Content-Type':'application/json'}; init.body = JSON.stringify(o.body || {}); }
+  return (await fetch(p, init)).json();
+};
+async function refresh() {
+  const d = await api('/api/market/tab');
+  if (d.account) $('#acc').value = d.account;
+  $('#slot').value = d.slot || 0;
+  const cls = d.running ? 's-run' : d.status === 'done' ? 's-done' : d.status === 'error' ? 's-err' : 's-idle';
+  $('#st').textContent = d.running ? 'running' : d.status;
+  $('#st').className = 'tag ' + cls;
+  $('#last').textContent = d.lastRun ? `上次: ${new Date(d.lastRun).toLocaleString('zh-CN', {hour12:false})} ${d.note}` : '';
+  // 定时爬店状态
+  if (d.scheduleEnabled && d.intervalMin) {
+    $('#schedOn').checked = true;
+    [...$('#schedIv').options].forEach(o => { if (+o.value === d.intervalMin) $('#schedIv').value = o.value; });
+    const nxt = d.nextRunAt ? new Date(d.nextRunAt).toLocaleTimeString('zh-CN', {hour12:false}) : '即将';
+    $('#schedHint').textContent = d.running ? `⏳ 正在爬店…` : `下次: ${nxt}`;
+  } else {
+    $('#schedOn').checked = false;
+    $('#schedHint').textContent = '';
+  }
+  if (d.running || d.status === 'done') {
+    const logs = await api('/api/market/tab/logs');
+    if (logs.logs && logs.logs.length) {
+      $('#logs').className = 'logbox';
+      $('#logs').textContent = logs.logs.join('\n');
+      $('#logs').scrollTop = $('#logs').scrollHeight;
+    }
+  }
+}
+async function saveCfg() {
+  await api('/api/market/tab', { method:'POST', body:{ account: $('#acc').value.trim(), password: $('#pw').value.trim(), slot: +$('#slot').value } });
+  $('#hint').textContent = '已保存';
+  refresh();
+}
+async function startScan() {
+  const r = await api('/api/market/tab/start', { method:'POST' });
+  if (!r.ok) alert(r.error || '启动失败');
+  refresh();
+}
+async function stopScan() { await api('/api/market/tab/stop', { method:'POST' }); setTimeout(refresh, 1500); }
+async function saveSchedule() {
+  const r = await api('/api/market/schedule', { method:'POST', body:{ enabled: $('#schedOn').checked, intervalMin: +$('#schedIv').value } });
+  $('#schedHint').textContent = r.enabled ? `✅ 已开启（每 ${r.intervalMin} 分钟）` : '已关闭定时';
+  refresh();
+}
+async function doSearch() {
+  const params = new URLSearchParams();
+  if ($('#q').value) params.set('q', $('#q').value);
+  if ($('#city').value) params.set('city', $('#city').value);
+  if ($('#opt').value) { params.set('opt', $('#opt').value); params.set('type', '4'); }
+  params.set('order', $('#order').value);
+  params.set('limit', '20');
+  const d = await api('/api/market/search?' + params.toString());
+  if (!d.items || !d.items.length) { $('#results').innerHTML = '<span class="dim">无结果</span>'; return; }
+  $('#results').innerHTML = `<table><tr><th>物品</th><th>价格</th><th>数量</th><th>词条</th><th>城市</th><th>摊位</th></tr>` +
+    d.items.map(i => `<tr><td>${i.name || '#' + i.ITID}</td><td>${i.price.toLocaleString()}z</td><td>×${i.qty}</td><td style="font-size:11px">${i.opt_labels || ''}</td><td>${i.city || ''}</td><td class="dim">(${i.shop_x},${i.shop_y})</td></tr>`).join('') + '</table>';
+}
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

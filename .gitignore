@@ -1,5 +1,39 @@
+# Dependencies and build/test output
 node_modules/
-data/
+coverage/
+.nyc_output/
+dist/
+
+# Local environment and credentials
 .env
+.env.*
+!.env.example
+
+# Runtime state
+data/
 *.log
+*.pid
+*.sock
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+ro-analysis/roclient/accounts.json
+ro-analysis/roclient/workbench/accounts/
+ro-analysis/roclient/workbench/tabs.json
+ro-analysis/Online_mn.js
+ro-analysis/roclient/maps/moc_pryd1.gat
+wnacg-bulk-download.test.cjs
+
+# External reference checkouts (keep as their own repositories)
+ro-analysis/openkore/
+ro-analysis/roBrowserLegacy/
+
+# Editor and OS files
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*~

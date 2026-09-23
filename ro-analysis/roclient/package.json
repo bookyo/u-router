@@ -1,0 +1,15 @@
+{
+  "name": "ro-offline-tester",
+  "version": "0.1.0",
+  "description": "roBrowser V6 离线协议测试客户端（登录/巡路/NPC对话自动化测试）",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.6.3",
+    "ws": "^8.17.0"
+  }
+}

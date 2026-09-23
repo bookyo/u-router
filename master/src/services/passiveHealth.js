@@ -1,7 +1,7 @@
 'use strict';
 
 const Edge = require('../models/Edge');
-const { nextStatusFromRatio } = require('./healthRules');
+const { nextStatusFromActive, nextStatusFromRatio } = require('./healthRules');
 const { allEdgesDelivery } = require('./metricsQuery');
 
 // 连续良好比率的评估轮数（edge_id -> 次数），滞后恢复用
@@ -20,8 +20,9 @@ async function transitionStatus(edgeId, expectedFrom, next, guard = null) {
   if (expectedFrom === next) return { updated: false, noop: true };
   const filter = { edge_id: edgeId, status: expectedFrom };
   if (guard) {
-    filter['health.consecutive_successes'] = guard.successes;
-    filter['health.consecutive_failures'] = guard.failures;
+    if (guard.successes !== undefined) filter['health.consecutive_successes'] = guard.successes;
+    if (guard.failures !== undefined) filter['health.consecutive_failures'] = guard.failures;
+    if (guard.revision !== undefined) filter['health.revision'] = guard.revision;
   }
   const r = await Edge.updateOne(filter, { $set: { status: next } });
   return { updated: r.modifiedCount === 1 };
@@ -36,13 +37,42 @@ async function runRound(cfg, log = console.log) {
   const per = await allEdgesDelivery(primary.sec);
 
   for (const edge of edges) {
-    const d = per.get(edge.edge_id) || { dispatch: 0, requests: 0, ratio: null };
-    const { dispatch, requests, ratio } = d;
+    if (edge.health?.payload?.delivery_completion_observable === false) {
+      resetStreak(edge.edge_id);
+      await Edge.updateOne(
+        { edge_id: edge.edge_id },
+        { $set: { 'health.last_ratios': { [cfg.primaryWindow]: null } } },
+      );
+      continue;
+    }
+    const d = per.get(edge.edge_id) || {
+      dispatch: 0,
+      requests: 0,
+      downloads_started: 0,
+      downloads_completed: 0,
+      ratio: null,
+    };
+    const { dispatch, downloads_completed: completed, ratio } = d;
     const ratios = { [cfg.primaryWindow]: ratio === null ? null : Number(ratio.toFixed(4)) };
 
     // 分配量不足时不判定：凌晨没流量不能说明 Edge 有问题
     if (ratio === null || dispatch < primary.minDispatch) {
       await Edge.updateOne({ edge_id: edge.edge_id }, { $set: { 'health.last_ratios': ratios } });
+      continue;
+    }
+
+    // 主动探活先原子更新计数、随后 CAS 状态；被动轮次可能恰好读到两步之间的
+    // 快照。若计数已明确要求主动迁移，则本轮让主动引擎优先，不能用高 ratio
+    // 抢先把 degraded 恢复为 healthy。
+    const activeNext = nextStatusFromActive(
+      edge.status,
+      edge.health?.consecutive_successes || 0,
+      edge.health?.consecutive_failures || 0,
+      cfg,
+    );
+    if (activeNext !== edge.status) {
+      await Edge.updateOne({ edge_id: edge.edge_id }, { $set: { 'health.last_ratios': ratios } });
+      log(`[passive] ${edge.edge_id}: 主动健康迁移待完成（${edge.status} → ${activeNext}），本轮让路`);
       continue;
     }
 
@@ -52,10 +82,12 @@ async function runRound(cfg, log = console.log) {
 
     const next = nextStatusFromRatio(edge.status, ratio, streak, cfg);
     if (next !== edge.status) {
-      const r = await transitionStatus(edge.edge_id, edge.status, next);
+      const r = await transitionStatus(edge.edge_id, edge.status, next, {
+        revision: edge.health?.revision || 0,
+      });
       if (r.updated) {
         log(
-          `[passive] ${edge.edge_id}: delivery_ratio=${(ratio * 100).toFixed(1)}% (${requests}/${dispatch}) ${edge.status} → ${next}`,
+          `[passive] ${edge.edge_id}: delivery_ratio=${(ratio * 100).toFixed(1)}% (${completed}/${dispatch}) ${edge.status} → ${next}`,
         );
       } else {
         log(`[passive] ${edge.edge_id}: 状态已被并发修改（原读取为 ${edge.status}），本轮跳过`);

@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>挂机保姆 · 工作台</title>
+<style>
+:root{--bg:#111;--panel:#1b1b1f;--line:#2a2a30;--fg:#ddd;--dim:#888;--acc:#6cf;--ok:#6f6;--warn:#f96;--q:#c9f}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:13px/1.6 Menlo,monospace;margin:0;padding:14px}
+h2{margin:0 0 4px;font-size:15px}h3{margin:12px 0 6px;font-size:13px;color:var(--acc)}
+a{color:var(--acc)}
+.wrap{max-width:1180px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:400}
+.tag{display:inline-block;padding:0 6px;border-radius:3px;font-size:11px}
+.s-alive{background:#163;background:rgba(60,200,90,.15);color:var(--ok)}
+.s-recovered{background:rgba(100,180,255,.15);color:var(--acc)}
+.s-running{background:rgba(255,200,60,.15);color:#fc6}
+.s-error{background:rgba(255,90,90,.15);color:var(--warn)}
+.s-idle{background:#222;color:var(--dim)}
+input,select,button{background:#151518;border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:4px 8px;font:12px Menlo,monospace}
+input[type=number]{width:70px}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button.pri{background:#1d3a52;border-color:#2d5a82}
+button.mini{padding:1px 7px;font-size:11px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0}
+.mobs{display:flex;flex-wrap:wrap;gap:4px;max-width:520px}
+.mob{background:#222;border:1px solid var(--line);border-radius:10px;padding:1px 8px;cursor:pointer;font-size:11px}
+.mob.on{border-color:var(--acc);color:var(--acc);background:#12222f}
+#edit{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9;align-items:center;justify-content:center}
+#edit .card{width:720px;max-height:88vh;overflow:auto;margin:0}
+.logbox{background:#0d0d10;border:1px solid var(--line);border-radius:4px;padding:6px;max-height:220px;overflow:auto;font-size:11px;white-space:pre-wrap}
+.dim{color:var(--dim)}.ok{color:var(--ok)}.warn{color:var(--warn)}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:3px 10px;font-size:12px}
+.fsel{display:flex;justify-content:space-between;align-items:center;gap:6px;border-bottom:1px dashed #222;padding:2px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h2>🛡 挂机保姆 <span class="dim">（每小时挤号巡视：死亡自动回图+重开内挂+离线）</span></h2>
+    <div class="dim" style="margin-bottom:8px">机制：不在挂机图=已死亡回城 → 飞艇随机传送（免费）/洞穴走门逐层+瞬间移动 → 重下发内挂配置 → 裸断线交服务器离线内挂。
+    <a href="/" onclick="location.href='/';return false">← 返回练级工作台</a></div>
+    <div class="row">
+      <input id="na" placeholder="账号" style="width:130px"><input id="np" placeholder="密码" type="password" style="width:130px">
+      <select id="nl"><option value="eden">Eden线</option><option value="online">Online线</option></select>
+      <button class="pri" onclick="addAccount()">➕ 添加账号</button>
+      <span class="dim" id="hint"></span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>账号列表</h3>
+    <table id="tbl"><thead><tr>
+      <th>账号/角色</th><th>挂机图</th><th>定向怪</th><th>主动/辅助技能</th><th>周期</th><th>状态</th><th>最近巡视</th><th>操作</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<div id="edit"><div class="card" id="editBody"></div></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let ACCTS = [], SKILLS = [], CHARS = [], EDIT = null;
+
+async function api(p, opt) {
+  // opt.body 对象必须序列化（旧 Object.assign 覆盖 bug）；无 body 的调用默认 GET，带 body/start/stop 类默认 POST
+  const o = opt || {};
+  const method = o.method || (o.body != null ? 'POST' : 'GET');
+  const r = await fetch(p, method === 'GET'
+    ? { method }
+    : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o.body || {}) });
+  if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
+  return r.json();
+}
+
+async function refresh() {
+  const d = await api('/api/afk');
+  ACCTS = d.accounts;
+  render(d.logs || {}, d.running);
+}
+function render(logs, running) {
+  const tb = $('#tbl tbody');
+  tb.innerHTML = ACCTS.map((a) => {
+    const cls = { alive: 's-alive', recovered: 's-recovered', running: 's-running', error: 's-error' }[a.status] || 's-idle';
+    const atk = a.atk && a.atk.id ? `#${a.atk.id}Lv${a.atk.lv}` : '-';
+    const sup = a.sup && a.sup.id ? `#${a.sup.id}` : '-';
+    const mobs = (a.mobs || []).length + ' 种';
+    const last = a.last_check ? new Date(a.last_check).toLocaleTimeString('zh-CN', { hour12: false }) : '-';
+    return `<tr>
+      <td><b>${a.account}</b><br><span class="dim">${a.char_name ? a.char_name + ' Lv' + a.char_level : '<未绑定>'} slot${a.slot}</span></td>
+      <td>${a.map || '<span class=warn>未设置</span>'}${a.map ? '<br><span class=dim>' + (a.chainHint || '') + '</span>' : ''}</td>
+      <td>${mobs}</td><td>${atk} / ${sup}<br><span class="dim">距离${a.attack_dis}/${a.skill_dis}</span></td>
+      <td>${a.interval_min}分</td>
+      <td><span class="tag ${cls}">${a.status}${running === a.id ? '…' : ''}</span><br><span class="dim" style="font-size:11px">${(a.last_note || '').slice(0, 26)}</span></td>
+      <td>${last}</td>
+      <td>
+        <button class="mini pri" onclick="openEdit(${a.id})">配置</button>
+        <button class="mini" onclick="runNow(${a.id})">巡视</button>
+        <button class="mini" onclick="del(${a.id})">删</button>
+        <div class="logbox" id="lg${a.id}" style="margin-top:4px">${(logs[a.id] || []).join('\n')}</div>
+      </td>
+    </tr>`;
+  }).join('');
+  ACCTS.forEach((a) => { const el = document.getElementById('lg' + a.id); if (el) el.scrollTop = el.scrollHeight; });
+}
+
+async function addAccount() {
+  const account = $('#na').value.trim(), password = $('#np').value.trim();
+  if (!account) return alert('填账号');
+  const r = await api('/api/afk', { body: { account, password, line: $('#nl').value } });
+  if (r.error) return alert(r.error);
+  $('#na').value = ''; $('#np').value = '';
+  refresh();
+  openEdit(r.id);
+}
+
+async function runNow(id) { await api(`/api/afk/${id}/run`, { method: 'POST' }); refresh(); }
+async function del(id) { if (!confirm('删除该账号配置？')) return; await api(`/api/afk/${id}`, { method: 'DELETE' }); refresh(); }
+
+// ---------------- 配置编辑 ----------------
+// ---------------- 内挂行为设置全项（id 对照 Online_mn.js 内挂 UI，枚举=客户端模板真值） ----------------
+const FIELDS = [
+  { g: '战斗' },
+  { id: 0, label: '被非目标魔物攻击时', type: 'sel', opts: [[1, '瞬移'], [0, '无视'], [2, '还击']], def: 1 },
+  { id: 3, label: '自动瞬移间隔(秒)', type: 'num', def: 20 },
+  { id: 5, label: 'BOSS出现自动瞬移', type: 'chk', def: 1 },
+  { id: 6, label: '被群殴 n≥ 技能解围', type: 'num', def: 0 },
+  { id: 7, label: '被群殴 n≥ 自动瞬移', type: 'num', def: 3 },
+  { id: 9, label: 'HP< % 自动瞬移', type: 'num', def: 35 },
+  { id: 10, label: 'SP< % 自动瞬移', type: 'num', def: 0 },
+  { id: 11, label: 'HP< % 强制下线', type: 'num', def: 0 },
+  { id: 12, label: '自动使用缰绳', type: 'chk', def: 0 },
+  { id: 13, label: '找不到宠物饲料', type: 'sel', opts: [[0, '角色强制下线'], [1, '宠物回复蛋状态']], def: 0 },
+  { id: 14, label: '自动坐下', type: 'chk', def: 0 },
+  { id: 15, label: '坐下HP下限%', type: 'num', def: 30 },
+  { id: 17, label: '坐下HP上限%', type: 'num', def: 80 },
+  { id: 16, label: '坐下SP下限%', type: 'num', def: 10 },
+  { id: 18, label: '坐下SP上限%', type: 'num', def: 50 },
+  { id: 19, label: '坐下时被锁定', type: 'sel', opts: [[1, '还击'], [0, '无视'], [2, '瞬移'], [3, '逃脱']], def: 1 },
+  { id: 62, label: '无法瞬移时', type: 'sel', opts: [[0, '无视'], [1, '逃脱']], def: 0 },
+  { g: '吃药' },
+  { id: 36, label: '自动吃药', type: 'chk', def: 0 },
+  { id: 21, label: '加血范围 血量<%', type: 'num', def: 48 },
+  { id: 22, label: '加气范围 气量<%', type: 'num', def: 20 },
+  { id: 8, label: '优先使用治愈术', type: 'chk', def: 0 },
+  { id: 4, label: '优先使用HP转换', type: 'chk', def: 0 },
+  { id: 46, label: 'HP药1 ITID', type: 'num', def: 0 },
+  { id: 47, label: 'HP药2 ITID', type: 'num', def: 0 },
+  { id: 48, label: 'HP药3 ITID', type: 'num', def: 0 },
+  { id: 49, label: 'SP药1 ITID', type: 'num', def: 0 },
+  { id: 50, label: 'SP药2 ITID', type: 'num', def: 0 },
+  { id: 51, label: 'SP药3 ITID', type: 'num', def: 0 },
+  { g: '拾取与模式' },
+  { id: 20, label: '拾取概率≤%', type: 'num', def: 2 },
+  { id: 27, label: '战斗模式', type: 'sel', opts: [[0, '输出'], [1, '辅助'], [2, '混合'], [3, '跟随']], def: 0 },
+  { id: 28, label: '攻击模式', type: 'sel', opts: [[0, '集中攻击'], [1, '自由攻击'], [2, '援护攻击']], def: 1 },
+  { id: 38, label: '寻怪模式', type: 'sel', opts: [[0, '移动寻怪'], [1, '范围寻怪'], [2, '原地寻怪']], def: 0 },
+];
+function extraVal(f) {
+  const v = (EDIT.extra || {})[f.id];
+  return v === undefined ? f.def : v;
+}
+function renderFields() {
+  return FIELDS.map((f) => {
+    if (f.g) return `<div style="width:100%;color:var(--acc);margin-top:4px">▸ ${f.g}</div>`;
+    const v = extraVal(f);
+    if (f.type === 'sel') return `<label class="fsel" data-fid="${f.id}">${f.label}<select onchange="extraVal2(${f.id},this.value)">${f.opts.map(([n, t]) => `<option value="${n}" ${v === n ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
+    if (f.type === 'chk') return `<label class="fsel"><input type="checkbox" ${v ? 'checked' : ''} onchange="extraVal2(${f.id},this.checked?1:0)"> ${f.label}</label>`;
+    return `<label class="fsel">${f.label}<input type="number" value="${v}" style="width:56px" onchange="extraVal2(${f.id},+this.value)"></label>`;
+  }).join('');
+}
+const _extraTmp = {};
+function extraVal2(id, v) { _extraTmp[id] = v; }
+function collectExtra() {
+  const out = {};
+  for (const f of FIELDS) { if (f.g) continue; out[f.id] = _extraTmp[f.id] !== undefined ? _extraTmp[f.id] : extraVal(f); }
+  return out;
+}
+
+async function openEdit(id) {
+  EDIT = ACCTS.find((a) => a.id === id);
+  SKILLS = []; CHARS = [];
+  $('#edit').style.display = 'flex';
+  $('#editBody').innerHTML = `<h3>配置 ${EDIT.account}</h3><div class="dim">加载中…</div>`;
+  drawEdit();
+}
+function closeEdit() { $('#edit').style.display = 'none'; refresh(); }
+
+async function drawEdit(mapSearch) {
+  const a = EDIT;
+  const maps = mapSearch == null ? [] : (await api('/api/afk/maps?q=' + encodeURIComponent(mapSearch))).maps;
+  const mobs = a.map ? (await api('/api/afk/mobs?map=' + a.map)).mobs : [];
+  const mobSel = mobs.map((m) =>
+    `<span class="mob ${(a.mobs || []).includes(m.mobId) ? 'on' : ''}" onclick="toggleMob(${m.mobId},this)">${m.mobName} <span class=dim>#${m.mobId} Lv${m.level || '?'}</span></span>`).join('');
+  const skOpts = (list, sel) => '<option value="">— 无 —</option>' + list.map((s) =>
+    `<option value="${s.SKID}" ${sel === s.SKID ? 'selected' : ''}>#${s.SKID} ${s.name} Lv${s.level}</option>`).join('');
+  $('#editBody').innerHTML = `
+    <h3>配置 ${a.account} <button class="mini" onclick="closeEdit()">✕ 关闭</button></h3>
+    <div class="row"><b>① 绑定角色</b>
+      <button class="mini" onclick="probe()">登录取角色</button>
+      <select id="slot">${CHARS.length ? CHARS.map((c) => `<option value="${c.slot}" ${a.slot === c.slot ? 'selected' : ''}>slot${c.slot} ${c.name} Lv${c.level}</option>`).join('') : `<option value="${a.slot}">slot${a.slot}（点左侧按钮获取）</option>`}</select>
+      <button class="mini" onclick="bindSlot()">绑定并取技能</button>
+      <span class="dim">${a.char_name ? '已绑: ' + a.char_name : '未绑定'}</span>
+    </div>
+    <div class="row"><b>② 挂机地图</b>
+      <input id="mq" placeholder="搜地图（中文名/拼音）" value="${mapSearch || ''}" style="width:160px" onkeydown="if(event.key==='Enter')drawEdit($('#mq').value)">
+      <button class="mini" onclick="drawEdit($('#mq').value)">搜索</button>
+      <select id="map">${maps.length ? maps.map((m) => `<option value="${m.map}" ${a.map === m.map ? 'selected' : ''}>${m.map} ${m.cname}（${m.mobs}种怪）</option>`).join('') : `<option value="${a.map}">${a.map || '先搜索'}</option>`}</select>
+      <button class="mini pri" onclick="saveMap()">选定为挂机图</button>
+    </div>
+    ${a.map ? `<div class="dim">回图链: ${EDIT.chainPreview || '(见选定后刷新)'}</div>` : ''}
+    <h3>③ 定向怪物（${a.map || '先选图'}，点选/取消）</h3>
+    <div class="mobs">${mobSel || '<span class=dim>该图无怪物数据</span>'}</div>
+    <h3>④ 内挂技能与设置</h3>
+    <div class="row">主动技能 <select id="atk">${skOpts(SKILLS, a.atk && a.atk.id)}</select>
+      等级 <input id="atklv" type="number" value="${(a.atk && a.atk.lv) || 10}" min="1" max="10">
+      概率% <input id="atkpro" type="number" value="${(a.atk && a.atk.pro) || 100}" min="1" max="100"></div>
+    <div class="row">辅助技能 <select id="sup">${skOpts(SKILLS, a.sup && a.sup.id)}</select>
+      等级 <input id="suplv" type="number" value="${(a.sup && a.sup.lv) || 10}" min="1" max="10">
+      <label><input type="checkbox" id="supon" ${(a.sup && a.sup.on !== false) ? 'checked' : ''}> 开启</label></div>
+    <h3>⑤ 内挂行为设置（复刻游戏内挂，逐项下发 0x0AFE）</h3>
+    <div class="fgrid">${renderFields()}</div>
+    <div class="row">攻击距离 ≥ <input id="adis" type="number" value="${a.attack_dis || 1}" min="0" max="12"> 格
+      施法距离 ≥ <input id="sdis" type="number" value="${a.skill_dis || 2}" min="0" max="8"> 格
+      巡视周期 <input id="iv" type="number" value="${a.interval_min || 60}" min="10" max="720"> 分钟
+      <label><input type="checkbox" id="en" ${a.enabled ? 'checked' : ''}> 启用定时巡视</label></div>
+    <div class="row"><button class="pri" onclick="saveEdit()">💾 保存全部配置</button><span id="ehint" class="dim"></span></div>`;
+}
+
+async function probe() {
+  $('#ehint').textContent = '登录中…';
+  const r = await api(`/api/afk/${EDIT.id}/probe`, { method: 'POST' });
+  if (!r.ok) { $('#ehint').textContent = '失败: ' + (r.error || ''); return; }
+  CHARS = r.chars; $('#ehint').textContent = `拿到 ${r.chars.length} 个角色，选择后点「绑定并取技能」`;
+  drawEdit($('#mq') ? $('#mq').value : '');
+}
+async function bindSlot() {
+  const slot = +$('#slot').value;
+  await api(`/api/afk/${EDIT.id}`, { method: 'PUT', body: { slot } });
+  $('#ehint').textContent = '取技能中…';
+  const r = await api(`/api/afk/${EDIT.id}/skills`, { method: 'POST' });
+  if (!r.ok) { $('#ehint').textContent = '失败: ' + (r.error || ''); return; }
+  SKILLS = r.skills;
+  const ch = CHARS.find((c) => c.slot === slot) || { name: r.char, level: 0 };
+  await api(`/api/afk/${EDIT.id}`, { method: 'PUT', body: { char_name: r.char || ch.name, char_level: ch.level || 0 } });
+  EDIT.slot = slot; EDIT.char_name = r.char || ch.name; EDIT.char_level = ch.level || 0;
+  $('#ehint').textContent = `已绑定 ${r.char}，${r.skills.length} 个技能`;
+  drawEdit($('#mq') ? $('#mq').value : '');
+}
+function toggleMob(id, el) {
+  const i = (EDIT.mobs || []).indexOf(id);
+  if (i >= 0) EDIT.mobs.splice(i, 1); else (EDIT.mobs = EDIT.mobs || []).push(id);
+  el.classList.toggle('on');
+}
+async function saveMap() {
+  const map = $('#map').value; if (!map) return;
+  EDIT.map = map;
+  const d = await api('/api/afk/maps?q=' + encodeURIComponent(map));
+  EDIT.chainPreview = (d.maps.find((m) => m.map === map) || {}).chain || '(表面图，飞艇直达)';
+  await api(`/api/afk/${EDIT.id}`, { method: 'PUT', body: { map } });
+  $('#ehint') && ($('#ehint').textContent = '挂机图: ' + map);
+  drawEdit($('#mq') ? $('#mq').value : '');
+}
+async function saveEdit() {
+  const atkId = +($('#atk').value || 0), supId = +($('#sup').value || 0);
+  await api(`/api/afk/${EDIT.id}`, { method: 'PUT', body: {
+    mobs: EDIT.mobs || [],
+    atk: atkId ? { id: atkId, lv: +$('#atklv').value, pro: +$('#atkpro').value } : {},
+    sup: supId ? { id: supId, lv: +$('#suplv').value, on: $('#supon').checked } : {},
+    extra: collectExtra(),
+    attack_dis: +$('#adis').value, skill_dis: +$('#sdis').value,
+    interval_min: +$('#iv').value, enabled: $('#en').checked ? 1 : 0,
+  } });
+  closeEdit();
+}
+
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>

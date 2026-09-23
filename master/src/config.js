@@ -8,6 +8,12 @@ const num = (v, d) => {
   return Number.isNaN(n) ? d : n;
 };
 
+const MAX_TIMER_MS = 2_147_483_647;
+const MAX_INTERVAL_SEC = Math.floor(MAX_TIMER_MS / 1000);
+const MAX_TOKEN_TTL_SEC = 365 * 86400;
+const MAX_HEALTH_FAILURES = 1_000_000;
+const MAX_RATE_LIMIT = 1_000_000;
+
 const raw = {
   port: num(process.env.PORT, 7000),
   mongoUri: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/urouter',
@@ -64,45 +70,76 @@ function sanitizeConfig(c) {
     out.primaryWindow = Object.keys(c.ratioWindows)[0];
   }
 
-  const floors = {
-    healthCheckIntervalSec: 1,
-    statsPullIntervalSec: 1,
-    passiveCheckIntervalSec: 1,
-    distributorIntervalSec: 1,
-    dispatchFlushIntervalMs: 100,
-    healthTimeoutMs: 250,
-    unhealthyAfterFailures: 1,
-    recoverySuccesses: 1,
-    recoveryPasses: 1,
-    defaultTokenTtlSec: 60,
-    distributionTokenTtlSec: 60,
+  if (!Number.isSafeInteger(Number(out.port)) || Number(out.port) < 1 || Number(out.port) > 65535) {
+    warn(`port=${out.port} 非法`);
+    out.port = 7000;
+  } else {
+    out.port = Number(out.port);
+  }
+
+  const intervalRules = {
+    healthCheckIntervalSec: [1, 15],
+    statsPullIntervalSec: [1, 60],
+    passiveCheckIntervalSec: [1, 30],
+    distributorIntervalSec: [1, 10],
   };
-  for (const [k, min] of Object.entries(floors)) {
-    if (!Number.isFinite(Number(out[k])) || Number(out[k]) < min) {
+  for (const [k, [min, fallback]] of Object.entries(intervalRules)) {
+    if (!Number.isFinite(Number(out[k])) || Number(out[k]) < min || Number(out[k]) > MAX_INTERVAL_SEC) {
       warn(`${k}=${out[k]} 非法`);
-      out[k] = min;
+      out[k] = fallback;
     } else {
       out[k] = Number(out[k]);
     }
   }
 
+  const integerRules = {
+    dispatchFlushIntervalMs: [100, MAX_TIMER_MS, 5000],
+    healthTimeoutMs: [250, MAX_TIMER_MS, 4000],
+    unhealthyAfterFailures: [1, MAX_HEALTH_FAILURES - 1, 3],
+    recoverySuccesses: [1, MAX_HEALTH_FAILURES, 3],
+    recoveryPasses: [1, MAX_HEALTH_FAILURES, 2],
+    defaultTokenTtlSec: [60, MAX_TOKEN_TTL_SEC, 86400],
+    distributionTokenTtlSec: [60, MAX_TOKEN_TTL_SEC, 172800],
+    distributionMaxAttempts: [1, 1000, 3],
+    distributionStaleSec: [60, MAX_TOKEN_TTL_SEC, 3600],
+  };
+  for (const [key, [min, max, fallback]] of Object.entries(integerRules)) {
+    const value = Number(out[key]);
+    if (!Number.isSafeInteger(value) || value < min || value > max) {
+      warn(`${key}=${out[key]} 非法`);
+      out[key] = fallback;
+    } else {
+      out[key] = value;
+    }
+  }
+
   // offline 必须严格大于 unhealthy，否则节点会先 offline 再 unhealthy（语义颠倒）
-  if (!Number.isFinite(Number(out.offlineAfterFailures)) || Number(out.offlineAfterFailures) < 1) {
+  if (
+    !Number.isSafeInteger(Number(out.offlineAfterFailures)) ||
+    Number(out.offlineAfterFailures) < 1 ||
+    Number(out.offlineAfterFailures) > MAX_HEALTH_FAILURES
+  ) {
+    warn(`offlineAfterFailures=${out.offlineAfterFailures} 非法`);
     out.offlineAfterFailures = 10;
+  } else {
+    out.offlineAfterFailures = Number(out.offlineAfterFailures);
   }
   if (Number(out.offlineAfterFailures) <= Number(out.unhealthyAfterFailures)) {
     warn('offlineAfterFailures 必须大于 unhealthyAfterFailures');
-    out.offlineAfterFailures = Number(out.unhealthyAfterFailures) + 1;
+    out.unhealthyAfterFailures = 3;
+    out.offlineAfterFailures = 10;
   }
 
-  if (!Number.isFinite(Number(out.distributionMaxAttempts)) || Number(out.distributionMaxAttempts) < 1) {
-    warn('distributionMaxAttempts 非法');
-    out.distributionMaxAttempts = 1;
-  }
   // token 上限不能小于默认有效期
-  if (!Number.isFinite(Number(out.maxTokenTtlSec)) || Number(out.maxTokenTtlSec) < Number(out.defaultTokenTtlSec)) {
+  if (
+    !Number.isSafeInteger(Number(out.maxTokenTtlSec)) ||
+    Number(out.maxTokenTtlSec) > MAX_TOKEN_TTL_SEC ||
+    Number(out.maxTokenTtlSec) < Number(out.defaultTokenTtlSec)
+  ) {
     warn('maxTokenTtlSec 不能小于 defaultTokenTtlSec');
-    out.maxTokenTtlSec = Number(out.defaultTokenTtlSec);
+    out.maxTokenTtlSec = Math.max(Number(out.defaultTokenTtlSec), 7 * 86400);
+  } else {
+    out.maxTokenTtlSec = Number(out.maxTokenTtlSec);
   }
 
   const okRatio = (v) => Number.isFinite(Number(v)) && Number(v) > 0 && Number(v) <= 1;
@@ -116,11 +153,14 @@ function sanitizeConfig(c) {
     out.unhealthyBelow = 0.7;
   }
 
-  if (!Number.isFinite(Number(out.linksRateLimitPerMin)) || Number(out.linksRateLimitPerMin) < 0) {
+  if (
+    !Number.isSafeInteger(Number(out.linksRateLimitPerMin)) ||
+    Number(out.linksRateLimitPerMin) < 0 ||
+    Number(out.linksRateLimitPerMin) > MAX_RATE_LIMIT
+  ) {
     out.linksRateLimitPerMin = 0;
-  }
-  if (!Number.isFinite(Number(out.distributionStaleSec)) || Number(out.distributionStaleSec) < 60) {
-    out.distributionStaleSec = 3600;
+  } else {
+    out.linksRateLimitPerMin = Number(out.linksRateLimitPerMin);
   }
   return out;
 }

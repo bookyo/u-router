@@ -54,19 +54,39 @@ module.exports = function downloadRouter({ config: cfg, db, stats, secret }) {
       // HEAD 只是探测元数据，不算一次下载开始
       if (req.method !== 'HEAD') stats.bump(fileId, 'downloads_started', 1);
     };
+    const failUnreadable = () => {
+      stats.bump(fileId, 'requests', 1);
+      stats.bump(fileId, 's5xx', 1);
+      if (!res.headersSent) res.status(500);
+      res.end();
+    };
+    // HEAD 和 X-Accel 不会由 Node 的 createReadStream 触发 open/error，必须先
+    // 真正打开一次文件验证可读性；仅检查数据库记录或 existsSync 会保留竞态。
+    const withReadableFile = (next) => {
+      fs.open(file.storage_path, 'r', (openErr, fd) => {
+        if (openErr) return failUnreadable();
+        return fs.close(fd, (closeErr) => {
+          if (closeErr) return failUnreadable();
+          return next();
+        });
+      });
+    };
 
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
 
     // Nginx/Caddy 前置：鉴权计数后把真正的文件发送交给反向代理
-    //（此模式无法感知文件是否可读，成功计数维持原语义，见 README）
+    // Node 无法获知反向代理最终是否完整送达，但至少在下发内部重定向前验证
+    // 文件此刻存在且可读，避免已知缺失文件虚增成功统计。
     if (cfg.enableXAccel) {
-      countSuccess();
-      const internal = `${cfg.xAccelPrefix.replace(/\/+$/, '')}/${path.basename(file.storage_path)}`;
-      res.setHeader('X-Accel-Redirect', internal);
-      res.setHeader('Content-Length', file.size);
-      return res.status(200).end();
+      return withReadableFile(() => {
+        countSuccess();
+        const internal = `${cfg.xAccelPrefix.replace(/\/+$/, '')}/${path.basename(file.storage_path)}`;
+        res.setHeader('X-Accel-Redirect', internal);
+        res.setHeader('Content-Length', file.size);
+        return res.status(200).end();
+      });
     }
 
     const size = file.size;
@@ -79,19 +99,25 @@ module.exports = function downloadRouter({ config: cfg, db, stats, secret }) {
     }
 
     let start = 0;
-    let end = Math.max(size - 1, 0);
+    // 空文件的闭区间不存在；使用 end=-1 得到 len=0。旧实现把 end 钳成 0，
+    // 错发 Content-Length: 1，客户端会一直等待不存在的一个字节。
+    let end = size === 0 ? -1 : size - 1;
     if (range) {
       start = range.start;
       end = range.end;
       res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
     }
     const len = end - start + 1;
+    if (req.method === 'HEAD') {
+      return withReadableFile(() => {
+        res.setHeader('Content-Length', len);
+        res.status(range ? 206 : 200);
+        countSuccess();
+        return res.end();
+      });
+    }
     res.setHeader('Content-Length', len);
     res.status(range ? 206 : 200);
-    if (req.method === 'HEAD') {
-      countSuccess();
-      return res.end();
-    }
 
     let sent = 0;
     let opened = false;

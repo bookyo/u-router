@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "RO 启动器解卡器（lastro api.html）",
+  "version": "1.1.0",
+  "description": "向丢失 opener 握手的 roBrowser api.html 标签注入 ROConfig（postMessage），解除“正在初始化程序....”卡死；可选自动挂载 WebSocket 封包监听（window.__wsLog / __sendGame）。",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "RO 启动器解卡器"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://post.lastro.cn/ro/api.html*",
+        "https://game.lastro.cn/ro/api.html*"
+      ],
+      "js": [
+        "content-guard.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://post.lastro.cn/ro/api.html*",
+        "https://game.lastro.cn/ro/api.html*"
+      ],
+      "js": [
+        "content-bridge.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://post.lastro.cn/ro/api.html*",
+        "https://game.lastro.cn/ro/api.html*"
+      ],
+      "js": [
+        "content-main.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}

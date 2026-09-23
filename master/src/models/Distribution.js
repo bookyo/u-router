@@ -13,6 +13,9 @@ const targetSchema = new mongoose.Schema(
       default: 'pending',
     },
     pull_id: { type: String, default: '' },
+    // 当前逻辑拉取代次的稳定幂等键；POST 响应不确定或 stale 对账时复用，
+    // 只有远端明确 failed 后才清空并开启新代次。
+    dedup_key: { type: String, default: '' },
     // 完成后回填：该 Edge 上的 file_id，并自动登记到 File.edges
     edge_file_id: { type: String, default: '' },
     bytes: { type: Number, default: 0 },

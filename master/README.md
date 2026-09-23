@@ -25,7 +25,7 @@ npm start               # 或 npm run dev（文件变更自动重启）
 
 所有 `/api/*` 在设置 `MASTER_API_KEY` 后需携带 `x-api-key` 请求头。`/api/v1/health` 例外（给监控用）。
 
-**安全基线**：生产环境务必设置 `MASTER_API_KEY`，并建议开启 `LINKS_RATE_LIMIT_PER_MIN`（分发接口每 IP 限流）——不设限流时，恶意刷 links 接口会虚增分配量、把 delivery_ratio 压到阈值以下，导致被动健康引擎误摘所有 Edge。未设置 KEY 时启动日志会给出醒目警告。`NODE_ENV=production` 时 500 错误不再回传内部细节。
+**安全基线**：生产环境务必设置 `MASTER_API_KEY`，并建议开启 `LINKS_RATE_LIMIT_PER_MIN`（分发接口每 IP 限流）——不设限流时，恶意刷 links 接口会虚增分配量、把 delivery_ratio 压到阈值以下，导致被动健康引擎误摘所有 Edge。Edge `base_url` 默认经过 DNS 预检与实际连接复检，只允许公网地址；内网部署需显式设置 `MASTER_ALLOW_PRIVATE_EDGE_URL=true`。未设置 KEY 时启动日志会给出醒目警告。`NODE_ENV=production` 时 500 错误不再回传内部细节。
 
 ### 分发（核心）
 
@@ -101,7 +101,7 @@ GET /api/v1/metrics/files/:downloadId    # 单个下载项各 edge 的交付明�
 | 引擎 | 默认频率 | 逻辑 |
 | --- | --- | --- |
 | 主动探活 | 15s | `GET {base_url}/api/health`；连续 3 次失败 → unhealthy，10 次 → offline；恢复需连续 3 次成功 → 先进 degraded。计数用 `$inc` 原子更新，并发探活（循环/手动 probe/注册首探）不丢数 |
-| 被动比率 | 30s | `delivery_ratio = edge 请求 / 总控分配`（5m 窗口，分配量 ≥30 才判定）；<0.7 摘除、<0.9 降级、连续 2 轮 ≥0.9 才恢复 healthy |
+| 被动比率 | 30s | `delivery_ratio = downloads_completed / 总控分配`（HEAD、中断和失败请求不计分子；5m 窗口，分配量 ≥30 才判定）；<0.7 摘除、<0.9 降级、连续 2 轮 ≥0.9 才恢复 healthy。Edge 报告完成不可观测（X-Accel）时跳过该判定 |
 | 统计拉取 | 60s | 从该 Edge 已存的最后一个分钟桶续拉（幂等覆盖）。总控重启/停机不丢统计；offline 的 Edge 跳过拉取 |
 | 分发编排 | 10s | 跟进 PULL 分发任务：派发拉取指令（签名源 URL）→ 跟进度 → 完成自动登记 File.edges，失败重试至上限 |
 

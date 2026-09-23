@@ -214,9 +214,41 @@ test('SSRF 防护：IPv4-mapped IPv6 不能绕过（回归）', async () => {
     () => guarded.createPull({ source_url: 'http://[::ffff:a00:1]/secret', filename: 'a.bin' }), // 10.0.0.1 十六进制
     /内网|回环/,
   );
+  // fe80::/10 全段都是链路本地，不只 fe80::/16；fe90/febf 都必须拒绝。
+  await assert.rejects(
+    () => guarded.createPull({ source_url: 'http://[fe90::1]/secret', filename: 'a.bin' }),
+    /内网|回环/,
+  );
+  await assert.rejects(
+    () => guarded.createPull({ source_url: 'http://[febf::1]/secret', filename: 'a.bin' }),
+    /内网|回环/,
+  );
+  await assert.rejects(
+    () => guarded.createPull({ source_url: 'http://[fec0::1]/secret', filename: 'a.bin' }),
+    /内网|回环/,
+  );
+  await assert.rejects(
+    () => guarded.createPull({ source_url: 'http://[::127.0.0.1]/secret', filename: 'a.bin' }),
+    /内网|回环/,
+  );
+  for (const ip of [
+    '64:ff9b:1::1',
+    '100::1',
+    '2001:2::1',
+    '2001:10::1',
+    '2001:20::1',
+    '2002:7f00:1::1',
+    '3fff::1',
+  ]) {
+    await assert.rejects(
+      () => guarded.createPull({ source_url: `http://[${ip}]/secret`, filename: 'a.bin' }),
+      /内网|回环/,
+      `${ip} 必须视为非公网地址`,
+    );
+  }
 });
 
-test('幂等键：同一 dedup_key 的活跃任务重复创建返回同一 pull_id', async () => {
+test('幂等键：同一请求无论活跃或终态都返回同一 pull_id', async () => {
   const hold = http.createServer(() => {
     /* 占住槽位 */
   });
@@ -238,21 +270,82 @@ test('幂等键：同一 dedup_key 的活跃任务重复创建返回同一 pull_
     await waitFor(() => (mgr.get(a).status === 'pulling' ? true : null));
     // 同一逻辑派发的重复 POST（如响应丢失后重试）必须命中已有任务
     const b = await mgr.createPull({
-      source_url: `http://127.0.0.1:${hold.address().port}/d/x`,
+      // Master 会为同一逻辑派发重新签名，URL token/exp 可变化；Edge 不能因此
+      // 拒绝同一个 dedup_key，因为命中时不会使用新 URL 覆盖旧任务。
+      source_url: `http://127.0.0.1:${hold.address().port}/d/new-signed-token`,
       filename: 'a.bin',
       dedup_key: 't1:e1:1',
     });
     assert.equal(b, a);
-    // 终态失败后同键允许创建新任务（新的一轮派发）
+    // 响应丢失后 Master 可能到下轮才重试，此时任务已经终态；仍必须命中原任务。
     await waitFor(() => (mgr.get(a).status === 'failed' ? true : null));
     const c = await mgr.createPull({
-      source_url: `http://127.0.0.1:${hold.address().port}/d/x`,
+      source_url: `http://127.0.0.1:${hold.address().port}/d/newer-signed-token`,
       filename: 'a.bin',
       dedup_key: 't1:e1:1',
     });
-    assert.notEqual(c, a);
+    assert.equal(c, a);
+    const dedupIndex = mgr.db
+      .prepare("PRAGMA index_list('pulls')")
+      .all()
+      .find((x) => x.name === 'idx_pulls_dedup_key');
+    assert.ok(dedupIndex && dedupIndex.unique === 1, 'dedup_key 必须由数据库唯一约束兜底');
+
+    await assert.rejects(
+      () =>
+        mgr.createPull({
+          source_url: `http://127.0.0.1:${hold.address().port}/d/other`,
+          filename: 'other.bin',
+          dedup_key: 't1:e1:1',
+        }),
+      /幂等键.*参数|dedup/i,
+      '同键不同请求不能静默返回无关任务',
+    );
   } finally {
     hold.close();
+  }
+});
+
+test('丢弃坏分片后必须等 unlink 完成再开始下一次尝试', async () => {
+  const body = Buffer.alloc(256 * 1024, 7);
+  let cleanupPending = false;
+  let racedRequests = 0;
+  const source = http.createServer((req, res) => {
+    if (cleanupPending) racedRequests += 1;
+    res.writeHead(200, { 'content-length': body.length });
+    res.end(body);
+  });
+  await new Promise((resolve) => source.listen(0, '127.0.0.1', resolve));
+  const originalUnlink = fs.unlink;
+  fs.unlink = (target, callback) => {
+    cleanupPending = true;
+    setTimeout(() => {
+      originalUnlink(target, (error) => {
+        cleanupPending = false;
+        callback(error);
+      });
+    }, 80);
+  };
+  const mgr = new PullManager({
+    db: initDatabase(':memory:'),
+    storageDir: fs.mkdtempSync(path.join(os.tmpdir(), 'pull-cleanup-race-')),
+    allowPrivate: true,
+    maxAttempts: 2,
+    pullTimeoutMs: 2000,
+    log: () => {},
+  });
+  try {
+    const id = await mgr.createPull({
+      source_url: `http://127.0.0.1:${source.address().port}/bad.bin`,
+      filename: 'bad.bin',
+      expected_sha256: '0'.repeat(64),
+    });
+    await waitFor(() => (mgr.get(id).status === 'failed' ? true : null));
+    assert.equal(racedRequests, 0, '下一次请求不能早于上一次坏分片清理完成');
+  } finally {
+    await waitFor(() => (!cleanupPending ? true : null));
+    fs.unlink = originalUnlink;
+    source.close();
   }
 });
 

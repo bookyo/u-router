@@ -2,6 +2,7 @@
 
 const Edge = require('../models/Edge');
 const EdgeMetric = require('../models/EdgeMetric');
+const { fetchEdge } = require('./networkPolicy');
 
 // 拉取起点游标：从该 Edge 已存的最后一个分钟桶续拉（覆盖式幂等），
 // 修复总控停机超过 2 分钟时中间分钟桶永久丢失的问题。
@@ -18,7 +19,7 @@ async function pullEdge(edge, log = console.log) {
   const base = edge.base_url.replace(/\/+$/, '');
   const last = await EdgeMetric.findOne({ edge_id: edge.edge_id }).sort({ minute: -1 }).lean();
   const sinceMinute = sinceFromLastStored(last ? Math.floor(new Date(last.minute).getTime() / 60000) : NaN);
-  const res = await fetch(`${base}/api/stats?since=${sinceMinute}`, {
+  const res = await fetchEdge(`${base}/api/stats?since=${sinceMinute}`, {
     signal: AbortSignal.timeout(8000),
     headers: edge.api_key ? { 'x-api-key': edge.api_key } : {},
   });

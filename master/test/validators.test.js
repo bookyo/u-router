@@ -48,6 +48,7 @@ describe('validateEdgeCreate', () => {
     assert.equal(validateEdgeCreate({ base_url: 'http://127.0.0.1:7100' }).ok, false);
     assert.equal(validateEdgeCreate({ base_url: 'http://localhost:7100' }).ok, false);
     assert.equal(validateEdgeCreate({ base_url: 'http://[::ffff:10.0.0.1]:80' }).ok, false);
+    assert.equal(validateEdgeCreate({ base_url: 'http://[fe90::1]:80' }).ok, false);
     assert.equal(validateEdgeCreate({ base_url: 'https://edge.example.com' }).ok, true);
   });
 

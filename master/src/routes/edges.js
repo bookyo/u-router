@@ -9,6 +9,7 @@ const { validateEdgeCreate, sanitizeEdgePatch } = require('../services/validator
 const { allEdgesDelivery, edgeDelivery } = require('../services/metricsQuery');
 const { checkEdge } = require('../services/healthCheck');
 const { resetStreak } = require('../services/passiveHealth');
+const { assertPublicUrl } = require('../services/networkPolicy');
 
 // 列表/详情响应中隐藏密钥字段（创建响应保留一次生成的密钥供登记 Edge）
 function stripSecrets(edge) {
@@ -23,11 +24,20 @@ function stripSecrets(edge) {
 async function deliveryForWindow(cfg, name) {
   const per = await allEdgesDelivery(cfg.ratioWindows[name].sec);
   return (edgeId) => {
-    const d = per.get(edgeId) || { dispatch: 0, requests: 0, s2xx: 0, ratio: null };
+    const d = per.get(edgeId) || {
+      dispatch: 0,
+      requests: 0,
+      s2xx: 0,
+      downloads_started: 0,
+      downloads_completed: 0,
+      ratio: null,
+    };
     return {
       dispatch: d.dispatch,
       requests: d.requests,
       s2xx: d.s2xx,
+      downloads_started: d.downloads_started,
+      downloads_completed: d.downloads_completed,
       ratio: d.ratio === null ? null : Number(d.ratio.toFixed(4)),
     };
   };
@@ -42,6 +52,7 @@ module.exports = function edgesRouter({ config: cfg }) {
       const body = req.body || {};
       const v = validateEdgeCreate(body);
       if (!v.ok) return res.status(400).json({ error: v.error });
+      await assertPublicUrl(body.base_url);
 
       const { edge_id, name, region, base_url, weight, token_secret, api_key, enabled } = body;
       const id = edge_id || `edge-${crypto.randomBytes(3).toString('hex')}`;
@@ -96,6 +107,8 @@ module.exports = function edgesRouter({ config: cfg }) {
           dispatch: d.dispatch,
           requests: d.requests,
           s2xx: d.s2xx,
+          downloads_started: d.downloads_started,
+          downloads_completed: d.downloads_completed,
           ratio: d.ratio === null ? null : Number(d.ratio.toFixed(4)),
         };
       }
@@ -113,6 +126,7 @@ module.exports = function edgesRouter({ config: cfg }) {
       if (Object.keys(v.patch).length === 0) {
         return res.status(400).json({ error: '没有可更新的字段' });
       }
+      if (v.patch.base_url) await assertPublicUrl(v.patch.base_url);
       const doc = await Edge.findOneAndUpdate(
         { edge_id: req.params.edgeId },
         { $set: v.patch },

@@ -6,8 +6,10 @@ const mongoose = require('mongoose');
 const { before, after, test } = require('node:test');
 
 const Edge = require('../src/models/Edge');
+const DispatchLog = require('../src/models/DispatchLog');
+const EdgeMetric = require('../src/models/EdgeMetric');
 const { checkEdge } = require('../src/services/healthCheck');
-const { transitionStatus } = require('../src/services/passiveHealth');
+const { transitionStatus, runRound: runPassiveRound, resetStreak } = require('../src/services/passiveHealth');
 
 const cfg = {
   healthTimeoutMs: 1000,
@@ -24,6 +26,7 @@ let mode = 'ok';
 let connected = false;
 
 before(async () => {
+  process.env.MASTER_ALLOW_PRIVATE_EDGE_URL = 'true';
   try {
     await mongoose.connect('mongodb://127.0.0.1:27017/urouter_test_health', {
       serverSelectionTimeoutMS: 2000,
@@ -50,6 +53,7 @@ after(async () => {
     await mongoose.connection.dropDatabase();
     await mongoose.disconnect();
   }
+  delete process.env.MASTER_ALLOW_PRIVATE_EDGE_URL;
 });
 
 async function freshEdge() {
@@ -131,4 +135,143 @@ test('探活状态迁移绑定计数版本：并发改写计数后迟到的迁�
   // 不带计数期望（被动引擎场景）仍可用
   const r2 = await transitionStatus('t-edge', 'unhealthy', 'degraded');
   assert.equal(r2.updated, true);
+});
+
+test('被动恢复绑定 health revision，不压过并发主动失败信号', async (t) => {
+  if (!connected) return t.skip('MongoDB 不可用');
+  await Promise.all([Edge.deleteMany({}), DispatchLog.deleteMany({}), EdgeMetric.deleteMany({})]);
+  resetStreak('t-edge');
+  const minute = new Date(Math.floor(Date.now() / 60000) * 60000 - 60000);
+  await Edge.create({
+    edge_id: 't-edge',
+    base_url: `http://127.0.0.1:${port}`,
+    token_secret: 'x',
+    status: 'degraded',
+    health: { revision: 0, consecutive_successes: 0, consecutive_failures: 2 },
+  });
+  await DispatchLog.create({ minute, edge_id: 't-edge', file_id: 'pkg', count: 10 });
+  await EdgeMetric.create({
+    minute,
+    edge_id: 't-edge',
+    file_id: 'f1',
+    requests: 10,
+    s2xx: 10,
+    downloads_started: 10,
+    downloads_completed: 10,
+  });
+
+  const originalUpdateOne = Edge.updateOne.bind(Edge);
+  let injected = false;
+  Edge.updateOne = async (filter, update, options) => {
+    if (!injected && filter && filter.status === 'degraded') {
+      injected = true;
+      // 被动引擎读取 degraded 后、提交恢复迁移前，主动探活记录了第 3 次失败。
+      await originalUpdateOne(
+        { edge_id: 't-edge' },
+        { $set: { 'health.consecutive_successes': 0 }, $inc: { 'health.consecutive_failures': 1, 'health.revision': 1 } },
+      );
+    }
+    return originalUpdateOne(filter, update, options);
+  };
+  try {
+    await runPassiveRound(
+      {
+        ratioWindows: { '5m': { sec: 300, minDispatch: 1 } },
+        primaryWindow: '5m',
+        degradedBelow: 0.9,
+        unhealthyBelow: 0.7,
+        recoveryPasses: 1,
+      },
+      noop,
+    );
+  } finally {
+    Edge.updateOne = originalUpdateOne;
+  }
+
+  const final = await Edge.findOne({ edge_id: 't-edge' }).lean();
+  assert.equal(injected, true);
+  assert.equal(final.health.revision, 1);
+  assert.equal(final.health.consecutive_failures, 3);
+  assert.equal(final.status, 'degraded', '过期的被动恢复不得把节点写成 healthy');
+});
+
+test('被动引擎读到已达主动失败阈值的快照时让路，不抢先恢复 healthy', async (t) => {
+  if (!connected) return t.skip('MongoDB 不可用');
+  await Promise.all([Edge.deleteMany({}), DispatchLog.deleteMany({}), EdgeMetric.deleteMany({})]);
+  resetStreak('t-edge');
+  const minute = new Date(Math.floor(Date.now() / 60000) * 60000 - 60000);
+  await Edge.create({
+    edge_id: 't-edge',
+    base_url: `http://127.0.0.1:${port}`,
+    token_secret: 'x',
+    status: 'degraded',
+    // 模拟主动探活已原子增加第 3 次失败，但其 CAS 状态迁移尚未执行。
+    health: { revision: 1, consecutive_successes: 0, consecutive_failures: 3 },
+  });
+  await DispatchLog.create({ minute, edge_id: 't-edge', file_id: 'pkg', count: 10 });
+  await EdgeMetric.create({
+    minute,
+    edge_id: 't-edge',
+    file_id: 'f1',
+    requests: 10,
+    s2xx: 10,
+    downloads_started: 10,
+    downloads_completed: 10,
+  });
+
+  await runPassiveRound(
+    {
+      ratioWindows: { '5m': { sec: 300, minDispatch: 1 } },
+      primaryWindow: '5m',
+      degradedBelow: 0.9,
+      unhealthyBelow: 0.7,
+      recoveryPasses: 1,
+      unhealthyAfterFailures: 3,
+      offlineAfterFailures: 10,
+      recoverySuccesses: 3,
+    },
+    noop,
+  );
+  const final = await Edge.findOne({ edge_id: 't-edge' }).lean();
+  assert.equal(final.status, 'degraded', '主动摘除条件已满足时，被动引擎必须等待主动迁移');
+});
+
+test('X-Accel Edge 不具备完成可观测性时跳过被动完成率摘除', async (t) => {
+  if (!connected) return t.skip('MongoDB 不可用');
+  await Promise.all([Edge.deleteMany({}), DispatchLog.deleteMany({}), EdgeMetric.deleteMany({})]);
+  const minute = new Date(Math.floor(Date.now() / 60000) * 60000 - 60000);
+  await Edge.create({
+    edge_id: 't-edge',
+    base_url: `http://127.0.0.1:${port}`,
+    token_secret: 'x',
+    status: 'healthy',
+    health: { payload: { delivery_completion_observable: false } },
+  });
+  await DispatchLog.create({ minute, edge_id: 't-edge', file_id: 'pkg', count: 100 });
+  await EdgeMetric.create({
+    minute,
+    edge_id: 't-edge',
+    file_id: 'f1',
+    requests: 100,
+    s2xx: 100,
+    downloads_started: 100,
+    downloads_completed: 0,
+  });
+
+  await runPassiveRound(
+    {
+      ratioWindows: { '5m': { sec: 300, minDispatch: 1 } },
+      primaryWindow: '5m',
+      degradedBelow: 0.9,
+      unhealthyBelow: 0.7,
+      recoveryPasses: 1,
+      unhealthyAfterFailures: 3,
+      offlineAfterFailures: 10,
+      recoverySuccesses: 3,
+    },
+    noop,
+  );
+  const final = await Edge.findOne({ edge_id: 't-edge' }).lean();
+  assert.equal(final.status, 'healthy');
+  assert.equal(final.health.last_ratios['5m'], null);
 });

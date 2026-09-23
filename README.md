@@ -1,6 +1,6 @@
 # u-router — 多节点下载分发系统（Download Traffic Director）
 
-总控（Control Plane）负责 **链接池 + 加权调度 + 健康检测**，Edge 节点负责 **文件托管 + 签名下载 + 分钟级统计**，再通过"分配量 vs 实际请求量"的偏差（delivery_ratio）反推 Edge 健康状态。
+总控（Control Plane）负责 **链接池 + 加权调度 + 健康检测**，Edge 节点负责 **文件托管 + 签名下载 + 分钟级统计**，再通过“分配量 vs 完整下载量”的偏差（delivery_ratio）反推 Edge 健康状态。
 
 ```text
                           ┌────────────────────────┐
@@ -30,7 +30,7 @@ Client/API ──────────────▶│  Download Dispatcher
 | --- | --- |
 | 加权随机分发 | 文件边权重 × Edge 权重 × 状态倍率（healthy 100%、degraded 20%、其余 0%） |
 | 双层统计 | 总控记 `dispatch_count`（分配量，内存聚合每 5s 落库）；Edge 记实际 `requests/bytes/2xx…`（SQLite 分钟桶，每秒 flush） |
-| delivery_ratio | `edge 成功响应数(s2xx) / 总控分配`，失败请求与系统统计桶不计入分子；5m/1h/24h 多窗口；≥0.9 健康、0.7~0.9 降级、<0.7 摘除 |
+| delivery_ratio | `edge 完整下载数(downloads_completed) / 总控分配`，HEAD、中断/失败请求与系统统计桶不计入分子；5m/1h/24h 多窗口；≥0.9 健康、0.7~0.9 降级、<0.7 摘除。X-Accel 无法观察代理最终交付，自动跳过被动比率判定 |
 | 主动探活 | 每 15s `GET {edge}/api/health`（磁盘/负载/版本），连续 3 次失败摘除、10 次标 offline；状态迁移为绑定探活计数版本的 CAS |
 | 滞后恢复（hysteresis） | 恢复先入 degraded 观察期小流量验证，需连续 3 次探活成功 + 连续 2 轮比率良好才回 healthy，避免反复抖动 |
 | 签名下载链接 | `GET /d/<token>`，HMAC-SHA256 + 过期时间，不暴露真实文件路径 |
@@ -42,7 +42,7 @@ Client/API ──────────────▶│  Download Dispatcher
 
 ## 快速开始
 
-前置：Node ≥ 20、MongoDB（本机 27017 即可）。
+前置：Node ≥ 20.18.1、MongoDB（本机 27017 即可）。
 
 ```bash
 # 1. 启动一个 Edge（终端 1）
@@ -58,7 +58,7 @@ npm install
 npm start                     # 默认 :7000（macOS 注意：AirPlay 占用 5000/7000，请改 PORT）
 ```
 
-> **安全默认**：Edge 的 PULL 源与总控注册的 Edge `base_url` 默认只允许**公网**地址（含 IPv4-mapped IPv6 检测、连接时 DNS 校验），防止 SSRF 探测内网与云元数据。本机/内网部署显式设置：edge 侧 `PULL_ALLOW_PRIVATE_NET=true`，master 侧 `MASTER_ALLOW_PRIVATE_EDGE_URL=true`。
+> **安全默认**：Edge 的 PULL 源与总控注册的 Edge `base_url` 默认只允许**公网**地址（含完整 IPv4/IPv6 非公网网段、DNS 预检和连接时复检），防止 SSRF 与 DNS rebinding。本机/内网部署显式设置：edge 侧 `PULL_ALLOW_PRIVATE_NET=true`，master 侧 `MASTER_ALLOW_PRIVATE_EDGE_URL=true`。
 
 ## 完整使用流程
 
@@ -129,9 +129,9 @@ edge/     节点：Express + better-sqlite3，可水平部署多台
 
 ```bash
 cd master && npm test    # 76 个用例：调度、token、健康状态机/计数绑定 CAS/并发、指标聚合
-                         # （s2xx 分子、系统桶排除）、校验（含 base_url SSRF）、限流、游标、
+                         # （downloads_completed 分子、HEAD/中断/系统桶排除）、校验（含连接层 SSRF）、限流、游标、
                          # recorder 真实 Mongo 部分失败、配置清洗、密钥遮蔽、分发全链路
-                         # （幂等键、stale 先查远端、queued 不续期）——连真实 MongoDB 与 Edge 进程
+                         # （跨终态幂等键、响应丢失恢复、stale 先对账、queued 不续期）——连真实 MongoDB 与 Edge 进程
 cd edge   && npm test    # 27 个用例：token、分钟桶、HTTP 集成（500 统计回归、上传中断/超限
                          # 清理）、Edge 互拉（哈希校验、SSRF 含 mapped-IPv6、字节上限、并发
                          # 排队、幂等键、重启恢复）
