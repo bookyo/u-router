@@ -20,16 +20,10 @@ data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-ro-analysis/roclient/accounts.json
-ro-analysis/roclient/workbench/accounts/
-ro-analysis/roclient/workbench/tabs.json
-ro-analysis/Online_mn.js
-ro-analysis/roclient/maps/moc_pryd1.gat
 wnacg-bulk-download.test.cjs
 
-# External reference checkouts (keep as their own repositories)
-ro-analysis/openkore/
-ro-analysis/roBrowserLegacy/
+# Separate local repositories
+ro-analysis/
 
 # Editor and OS files
 .DS_Store
