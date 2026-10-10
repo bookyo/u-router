@@ -54,6 +54,12 @@ export function buildTranslations(rows) {
 
 export async function requestApi(settings, action, payload, fetcher = fetch) {
   const base = normalizeBaseUrl(settings.baseUrl);
+  if (
+    ["read", "update"].includes(action) &&
+    payload.expectedBaseUrl !== undefined &&
+    base !== normalizeBaseUrl(payload.expectedBaseUrl)
+  )
+    throw new Error("API 地址已变更，请恢复原地址，或取消编辑后重新读取词条");
   const headers = { Accept: "application/json" };
   const apiKey = settings.apiKey?.trim();
   if (apiKey) headers["X-API-Key"] = apiKey;
@@ -75,6 +81,18 @@ export async function requestApi(settings, action, payload, fetcher = fetch) {
         limit: "20",
         offset: String(payload.offset || 0),
       });
+  } else if (action === "read" || action === "update") {
+    if (!Number.isSafeInteger(payload.id) || payload.id < 1)
+      throw new Error("词条 ID 无效");
+    url += "/" + payload.id;
+    if (action === "update") {
+      if (!apiKey) throw new Error("编辑需要 API Key，请先打开设置");
+      init.method = "PATCH";
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify({
+        translations: buildTranslations(payload.rows || []),
+      });
+    }
   } else if (action === "create") {
     if (!apiKey) throw new Error("添加需要 API Key，请先打开设置");
     init.method = "POST";
@@ -89,7 +107,7 @@ export async function requestApi(settings, action, payload, fetcher = fetch) {
   } catch (error) {
     throw new Error(
       error.name === "TimeoutError" || error.name === "AbortError"
-        ? "请求超时；添加结果可能已保存，请先搜索确认，不要重复提交"
+        ? "请求超时；写入结果可能已保存，请先搜索确认，不要重复提交"
         : "无法连接 API，请检查地址、服务和访问权限",
     );
   }
@@ -110,7 +128,9 @@ export async function requestApi(settings, action, payload, fetcher = fetch) {
   if (
     !data ||
     (action === "search" && !Array.isArray(data.items)) ||
-    (action === "create" && (!Number.isSafeInteger(data.id) || data.id < 1))
+    (["create", "read", "update"].includes(action) &&
+      (!Number.isSafeInteger(data.id) || data.id < 1)) ||
+    (["read", "update"].includes(action) && data.id !== payload.id)
   )
     throw new Error("API 返回了无效数据，请检查地址");
   return data;

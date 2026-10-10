@@ -1,7 +1,93 @@
 import test from "node:test";
+test("edit cannot write to a different API address", async () => {
+  let calls = 0;
+  await assert.rejects(
+    requestApi(
+      { baseUrl: "http://server-b.test", apiKey: "key" },
+      "update",
+      {
+        id: 7,
+        expectedBaseUrl: "http://server-a.test",
+        rows: [
+          { language: "en", text: "Example" },
+          { language: "zh-Hans", text: "示例" },
+        ],
+      },
+      async () => {
+        calls++;
+        return new Response('{"id":7}');
+      },
+    ),
+    /API 地址已变更/,
+  );
+  assert.equal(calls, 0);
+});
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { buildTranslations, normalizeBaseUrl, requestApi } from "../core.js";
+test("edit loads exact ID and PATCH sends only multilingual names", async () => {
+  const calls = [];
+  const fetcher = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(
+      JSON.stringify({
+        id: 7,
+        translations: { en: ["Example"], "zh-Hans": ["示例"] },
+      }),
+    );
+  };
+  const settings = { baseUrl: "http://localhost:4444", apiKey: "secret" };
+  await requestApi(settings, "read", { id: 7 }, fetcher);
+  await requestApi(
+    settings,
+    "update",
+    {
+      id: 7,
+      rows: [
+        { language: "en", text: "Example\nSample" },
+        { language: "zh-Hans", text: "示例" },
+        { language: "ja", text: "例" },
+      ],
+    },
+    fetcher,
+  );
+  assert.equal(calls[0].url, "http://localhost:4444/v2/terms/7");
+  assert.equal(calls[1].init.method, "PATCH");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {
+    translations: {
+      en: ["Example", "Sample"],
+      "zh-Hans": ["示例"],
+      ja: ["例"],
+    },
+  });
+});
+test("edit requires key, validates ID and preserves errors", async () => {
+  const rows = [
+    { language: "en", text: "Example" },
+    { language: "zh-Hans", text: "示例" },
+  ];
+  await assert.rejects(
+    requestApi({ baseUrl: "http://localhost:4444" }, "update", { id: 1, rows }),
+    /API Key/,
+  );
+  for (const id of [-1, 0, "../settings", 1.5])
+    await assert.rejects(
+      requestApi({ baseUrl: "http://localhost:4444", apiKey: "k" }, "update", {
+        id,
+        rows,
+      }),
+      /ID/,
+    );
+  await assert.rejects(
+    requestApi(
+      { baseUrl: "http://localhost:4444", apiKey: "k" },
+      "update",
+      { id: 1, rows },
+      async () => new Response("{}", { status: 404 }),
+    ),
+    /不存在|404/,
+  );
+});
 test("manifest minimum supports dynamic viewport units and all entry points exist", () => {
   const manifest = JSON.parse(
     readFileSync(new URL("../manifest.json", import.meta.url), "utf8"),

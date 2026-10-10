@@ -207,9 +207,20 @@ textarea {
   padding: 13px;
 }
 .result-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 10px;
   color: var(--muted);
   margin-bottom: 9px;
+}
+.edit-term {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #edf3fc;
+  color: var(--blue);
+  font-size: 12px;
+  padding: 3px 10px;
 }
 .translation {
   display: flex;

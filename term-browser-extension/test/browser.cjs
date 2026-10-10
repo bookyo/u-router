@@ -236,6 +236,163 @@ let context;
   await popup.locator("#more-results").click();
   await popup.locator("#more-results").waitFor({ state: "hidden" });
   assert.equal(await popup.locator(".result").count(), 21);
+  const parentResponse = await fetch(baseUrl + "/v2/terms", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": "browser-test-key",
+    },
+    body: JSON.stringify({
+      translations: { en: ["Parent"], "zh-Hans": ["父级"] },
+    }),
+  });
+  const parent = await parentResponse.json();
+  await fetch(baseUrl + "/v2/terms/1", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": "browser-test-key",
+    },
+    body: JSON.stringify({
+      type: "character",
+      parentId: parent.id,
+      details: {
+        "zh-Hans": {
+          summary: "保留摘要",
+          body: "## 保留正文",
+          format: "markdown",
+        },
+      },
+      cover: { url: "https://example.com/cover.png" },
+      sources: [{ url: "https://example.com/source", title: "保留来源" }],
+    }),
+  });
+  const before = await (
+    await fetch(baseUrl + "/v2/terms/1", {
+      headers: { "X-API-Key": "browser-test-key" },
+    })
+  ).json();
+  await popup.locator(".edit-term").first().click();
+  await popup.locator("#create").filter({ hasText: "保存修改" }).waitFor();
+  assert.equal(
+    await popup.locator(".phrases").first().inputValue(),
+    "Example\nSample",
+  );
+  assert.equal(
+    await popup.locator(".language-row").count(),
+    3,
+    "all existing languages loaded",
+  );
+  await popup
+    .locator("body")
+    .screenshot({ path: path.join(artifacts, "edit-panel.png") });
+  await popup.locator(".phrases").first().fill("Example\nSample\nEdited Alias");
+  await popup.locator("#search-tab").click();
+  await popup.locator(".edit-term").first().click();
+  await popup.locator("#add-section").waitFor({ state: "visible" });
+  assert.match(
+    await popup.locator(".phrases").first().inputValue(),
+    /Edited Alias/,
+    "reopening same term preserves unsaved edits",
+  );
+  await popup.locator("#search-tab").click();
+  await popup.locator(".edit-term").nth(1).click();
+  await popup
+    .locator("#status.error")
+    .filter({ hasText: "取消编辑" })
+    .waitFor();
+  assert.match(
+    await popup.locator(".phrases").first().inputValue(),
+    /Edited Alias/,
+    "another result cannot replace current draft",
+  );
+  await popup.locator(".edit-term").first().click();
+  await popup.locator("#add-language").click();
+  await popup.locator(".language").nth(3).fill("fr");
+  await popup.locator(".phrases").nth(3).fill("Exemple\nModèle");
+  await options.locator("#base-url").fill(baseUrl + "/different-server");
+  await options.locator("button[type=submit]").click();
+  await options.waitForFunction(async () =>
+    (await chrome.storage.local.get("baseUrl")).baseUrl.endsWith(
+      "/different-server",
+    ),
+  );
+  await popup.locator("#create").click();
+  await popup
+    .locator("#status.error")
+    .filter({ hasText: "API 地址已变更" })
+    .waitFor();
+  await options.locator("#base-url").fill(baseUrl);
+  await options.locator("button[type=submit]").click();
+  await options.waitForFunction(
+    async () =>
+      !(await chrome.storage.local.get("baseUrl")).baseUrl.endsWith(
+        "/different-server",
+      ),
+  );
+  await options.locator("#api-key").fill("wrong-key");
+  await options.locator("button[type=submit]").click();
+  await options.waitForFunction(
+    async () =>
+      (await chrome.storage.local.get("apiKey")).apiKey === "wrong-key",
+  );
+  await popup.locator("#create").click();
+  await popup.locator("#status.error").filter({ hasText: "API Key" }).waitFor();
+  assert.match(
+    await popup.locator(".phrases").first().inputValue(),
+    /Edited Alias/,
+  );
+  assert.match(await popup.locator("#create").innerText(), /保存修改/);
+  await options.locator("#api-key").fill("browser-test-key");
+  await options.locator("button[type=submit]").click();
+  await options.waitForFunction(
+    async () =>
+      (await chrome.storage.local.get("apiKey")).apiKey === "browser-test-key",
+  );
+  await popup.locator("#create").click();
+  await popup
+    .locator("#status.success")
+    .filter({ hasText: "已保存词条 #1" })
+    .waitFor();
+  const after = await (
+    await fetch(baseUrl + "/v2/terms/1", {
+      headers: { "X-API-Key": "browser-test-key" },
+    })
+  ).json();
+  assert.deepEqual(after.translations.en, [
+    "Example",
+    "Sample",
+    "Edited Alias",
+  ]);
+  assert.deepEqual(after.translations.fr, ["Exemple", "Modèle"]);
+  assert.deepEqual(after.translations.ja, before.translations.ja);
+  for (const field of [
+    "id",
+    "type",
+    "parentId",
+    "details",
+    "cover",
+    "sources",
+    "tagIds",
+    "categoryIds",
+  ])
+    assert.deepEqual(
+      after[field],
+      before[field],
+      field + " must not be overwritten",
+    );
+  await popup.locator("#cancel-edit").click();
+  await popup.locator("#add-tab").click();
+  assert.match(await popup.locator("#create").innerText(), /创建/);
+  assert.equal(await popup.locator(".phrases").first().inputValue(), "");
+  await popup.locator("#search-tab").click();
+  await popup.locator("#query").fill("Edited Alias");
+  await popup.locator("#search-form button").click();
+  await popup.locator("#status").filter({ hasText: "找到 1 个词条" }).waitFor();
+  assert.match(await popup.locator(".result").innerText(), /Modèle/);
+  console.log(
+    "PASS: edit aliases + new language on same ID, preserve metadata, failed save retains input, cancel returns to create",
+  );
   await popup.close();
   console.log("PASS: shared toolbar panel pointer interaction");
   const strict = await context.newPage();

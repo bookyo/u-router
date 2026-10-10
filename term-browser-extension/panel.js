@@ -27,16 +27,17 @@ async function refresh() {
 refresh();
 window.addEventListener("focus", refresh);
 chrome.storage.onChanged.addListener(refresh);
+function showSection(name) {
+  for (const tab of ["search", "add"]) {
+    $(tab + "-tab").classList.toggle("active", tab === name);
+    $(tab + "-tab").setAttribute("aria-pressed", String(tab === name));
+    $(tab + "-section").hidden = tab !== name;
+  }
+  status("");
+  if (name === "search") $("query").focus();
+}
 for (const name of ["search", "add"])
-  $(name + "-tab").onclick = () => {
-    for (const tab of ["search", "add"]) {
-      $(tab + "-tab").classList.toggle("active", tab === name);
-      $(tab + "-tab").setAttribute("aria-pressed", String(tab === name));
-      $(tab + "-section").hidden = tab !== name;
-    }
-    status("");
-    if (name === "search") $("query").focus();
-  };
+  $(name + "-tab").onclick = () => showSection(name);
 $("settings").onclick = () =>
   call("openSettings").catch((e) => status(e.message, "error"));
 const close = () => {
@@ -100,7 +101,96 @@ function addRow(language = "", text = "", required = false) {
 addRow("en", "", true);
 addRow("zh-Hans", "", true);
 $("add-language").onclick = () => addRow();
+let editingId = null,
+  editingBaseUrl = null,
+  loadingEdit = false,
+  createDraft = null,
+  resultItems = [];
+const getRows = () =>
+  [...document.querySelectorAll(".language-row")].map((row) => ({
+    language: row.querySelector(".language").value,
+    text: row.querySelector(".phrases").value,
+  }));
+function replaceRows(rows) {
+  $("language-rows").replaceChildren();
+  for (const row of rows)
+    addRow(row.language, row.text, ["en", "zh-Hans"].includes(row.language));
+}
+function formBusy(busy) {
+  for (const el of document.querySelectorAll(
+    "#add-form input, #add-form textarea, #add-form button, nav button",
+  ))
+    el.disabled = busy;
+}
+function editLabels() {
+  $("add-tab").textContent = editingId ? "编辑 #" + editingId : "添加词条";
+  $("create").textContent = editingId ? "保存修改" : "创建多语言词条";
+  $("cancel-edit").hidden = !editingId;
+  $("form-intro").textContent = editingId
+    ? "编辑词条 #" + editingId + " · 修改名称、别名与语言"
+    : "让同一个意思，拥有不同语言的名字。";
+  $("form-hint").textContent = editingId
+    ? "每行一个译名，第一行是首选名称。保存将替换该词条的名称集合；移除额外语言会删除其译名。英文与简体中文必填，其他字段保持不变。"
+    : "每行一个译名，可填写多个同义词。英文与简体中文必填；相同内容再次提交也会创建新词条。";
+}
+async function beginEdit(id) {
+  if (loadingEdit || $("create").disabled) return;
+  if (editingId) {
+    if (editingId === id) showSection("add");
+    else
+      status(
+        "正在编辑词条 #" +
+          editingId +
+          "，请先取消编辑，再选择其它词条（未保存的输入会保留）。",
+        "error",
+      );
+    return;
+  }
+  loadingEdit = true;
+  formBusy(true);
+  status("正在读取词条 #" + id + "…");
+  try {
+    const settings = await call("summary");
+    const data = await call("read", { id, expectedBaseUrl: settings.baseUrl });
+    const rows = Object.entries(data.translations).map(([language, names]) => ({
+      language,
+      text: names.join("\n"),
+    }));
+    buildTranslations(rows);
+    if (!editingId) createDraft = getRows();
+    editingId = data.id;
+    editingBaseUrl = settings.baseUrl;
+    // Put the required languages first without changing alias order.
+    replaceRows([
+      { language: "en", text: data.translations.en.join("\n") },
+      { language: "zh-Hans", text: data.translations["zh-Hans"].join("\n") },
+      ...rows.filter((row) => !["en", "zh-Hans"].includes(row.language)),
+    ]);
+    editLabels();
+    showSection("add");
+    $("language-rows").querySelector("textarea").focus();
+  } catch (error) {
+    status(error.message, "error");
+  } finally {
+    loadingEdit = false;
+    formBusy(false);
+  }
+}
+$("cancel-edit").onclick = () => {
+  editingId = null;
+  editingBaseUrl = null;
+  replaceRows(
+    createDraft || [
+      { language: "en", text: "" },
+      { language: "zh-Hans", text: "" },
+    ],
+  );
+  createDraft = null;
+  editLabels();
+  showSection("search");
+};
 function render(items, append = false) {
+  resultItems = append ? [...resultItems, ...items] : items;
   if (!append) $("results").replaceChildren();
   for (const item of items) {
     const card = document.createElement("article");
@@ -108,6 +198,13 @@ function render(items, append = false) {
     const heading = document.createElement("div");
     heading.className = "result-heading";
     heading.textContent = "#" + item.id + " · " + (item.type || "term");
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "edit-term";
+    edit.textContent = "编辑";
+    edit.setAttribute("aria-label", "编辑词条 #" + item.id);
+    edit.onclick = () => beginEdit(item.id);
+    heading.append(edit);
     card.append(heading);
     for (const [lang, values] of Object.entries(item.translations || {})) {
       const line = document.createElement("div");
@@ -176,19 +273,28 @@ $("add-form").onsubmit = async (e) => {
   e.preventDefault();
   if ($("create").disabled) return;
   try {
-    const rows = [...document.querySelectorAll(".language-row")].map((row) => ({
-      language: row.querySelector(".language").value,
-      text: row.querySelector(".phrases").value,
-    }));
+    const rows = getRows();
     buildTranslations(rows);
-    $("create").disabled = true;
-    status("正在创建，请勿重复提交…");
-    const data = await call("create", { rows });
-    status("已创建词条 #" + data.id + "，可切换到搜索查看。", "success");
-    document.querySelectorAll(".phrases").forEach((el) => (el.value = ""));
+    formBusy(true);
+    status(
+      editingId
+        ? "正在保存词条 #" + editingId + "…"
+        : "正在创建，请勿重复提交…",
+    );
+    const data = await call(editingId ? "update" : "create", {
+      rows,
+      ...(editingId ? { id: editingId, expectedBaseUrl: editingBaseUrl } : {}),
+    });
+    if (editingId) {
+      render(resultItems.map((item) => (item.id === data.id ? data : item)));
+      status("已保存词条 #" + data.id + "，别名与语言已更新。", "success");
+    } else {
+      status("已创建词条 #" + data.id + "，可切换到搜索查看。", "success");
+      document.querySelectorAll(".phrases").forEach((el) => (el.value = ""));
+    }
   } catch (e) {
     status(e.message, "error");
   } finally {
-    $("create").disabled = false;
+    formBusy(false);
   }
 };

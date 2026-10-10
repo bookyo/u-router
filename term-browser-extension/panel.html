@@ -55,17 +55,20 @@
         <button id="more-results" class="secondary" hidden>加载更多</button>
       </section>
       <section id="add-section" hidden>
-        <p class="intro">让同一个意思，拥有不同语言的名字。</p>
+        <p class="intro" id="form-intro">让同一个意思，拥有不同语言的名字。</p>
         <form id="add-form">
           <div id="language-rows"></div>
           <button id="add-language" type="button" class="secondary">
             ＋ 添加更多语言
           </button>
-          <p class="hint">
+          <p class="hint" id="form-hint">
             每行一个译名，可填写多个同义词。英文与简体中文必填；相同内容再次提交也会创建新词条。
           </p>
           <button id="create" class="primary full" type="submit">
             创建多语言词条
+          </button>
+          <button id="cancel-edit" type="button" class="secondary" hidden>
+            取消编辑
           </button>
         </form>
       </section>

@@ -30,7 +30,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         baseUrl: settings.baseUrl,
         authenticated: Boolean(settings.apiKey),
       };
-    if (!["search", "create"].includes(message.action))
+    if (!["search", "create", "read", "update"].includes(message.action))
       throw new Error("不支持的操作");
     const origin = new URL(settings.baseUrl).origin + "/*";
     if (!(await chrome.permissions.contains({ origins: [origin] })))
