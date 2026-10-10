@@ -38,17 +38,22 @@ const databasePath = resolve(process.cwd(), process.env.DATABASE_PATH || 'data/t
 const host = process.env.HOST || '127.0.0.1';
 mkdirSync(dirname(databasePath), { recursive: true });
 
-const server = createServer(createApp({
+const app = createApp({
   apiKey: process.env.API_KEY,
   databasePath,
-}));
+  trustedProxyIps: (process.env.TRUST_PROXY_IPS || '').split(',').map((value) => value.trim()).filter(Boolean),
+});
+const server = createServer(app);
 
 server.listen(port, host, () => {
   console.log(`term-lookup-api listening on http://${host}:${port}`);
 });
 
+let stopping = false;
 function stop() {
-  server.close(() => process.exit(0));
+  if (stopping) return;
+  stopping = true;
+  server.close(() => { app.close(); process.exit(0); });
 }
 
 process.on('SIGINT', stop);

@@ -1,0 +1,15 @@
+body {
+  height: auto;
+  min-height: 100vh;
+  max-width: 560px;
+  margin: auto;
+  padding: 48px 12px;
+}
+main {
+  overflow: visible;
+}
+h1 {
+  font-size: 26px;
+  letter-spacing: -0.5px;
+  margin-top: 30px;
+}

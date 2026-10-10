@@ -1,0 +1,10 @@
+{
+  "name": "term-browser-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/core.test.js",
+    "test:browser": "node test/browser.cjs"
+  }
+}

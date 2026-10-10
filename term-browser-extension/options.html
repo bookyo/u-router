@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>词条随行 · 设置</title>
+    <link rel="stylesheet" href="panel.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <span class="mark">词</span>
+        <div><strong>词条随行</strong><small>连接你的多语言词典</small></div>
+      </div>
+      <h1>API 设置</h1>
+      <p class="intro">匿名可搜索；创建需要有效的 API Key。</p>
+      <form id="options-form">
+        <label for="base-url">API 地址</label
+        ><input
+          id="base-url"
+          type="url"
+          required
+          placeholder="http://127.0.0.1:4444"
+        />
+        <p class="hint">
+          填写服务根地址，不要加 /v2/terms。远程服务建议使用 HTTPS。
+        </p>
+        <label for="api-key">API Key（选填）</label
+        ><input
+          id="api-key"
+          type="password"
+          autocomplete="off"
+          placeholder="留空为匿名搜索"
+        />
+        <p class="hint">
+          仅保存在当前浏览器扩展的本地存储，不同步、不传给网页。匿名搜索共享每
+          IP 20 次 / 分钟，有效 Key 不限流。
+        </p>
+        <button class="primary full" type="submit">保存并授权 API 访问</button>
+      </form>
+      <div id="status" role="status" aria-live="polite"></div>
+      <p class="hint">
+        在正常网页右侧点「词」打开。浏览器内部页面不能注入，可用工具栏扩展按钮打开。
+      </p>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

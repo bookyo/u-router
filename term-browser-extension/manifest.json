@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "词条随行 · Term Pocket",
+  "version": "1.0.0",
+  "description": "随时搜索并添加多语言词条。支持中英文及更多语言、多个译名。",
+  "minimum_chrome_version": "108",
+  "permissions": ["storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["panel.html"], "matches": ["http://*/*", "https://*/*"] }
+  ],
+  "action": { "default_title": "词条随行", "default_popup": "panel.html" },
+  "options_page": "options.html"
+}

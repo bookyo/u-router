@@ -1,0 +1,32 @@
+{
+  "type": "character",
+  "translations": {
+    "en": ["Raiden Shogun", "Ei"],
+    "zh-Hans": ["雷电将军", "雷电影"],
+    "ja": ["雷電将軍"]
+  },
+  "details": {
+    "zh-Hans": {
+      "summary": "示例角色简介。",
+      "description": "示例多语言词条，包含名称、别名与详细内容。",
+      "body": "## 角色介绍\n\n支持 **加粗**、*强调* 和 [来源链接](https://example.com/source)。\n\n- 多语言名称\n- 别名检索\n\n| 项目 | 值 |\n| --- | --- |\n| 类型 | 角色 |",
+      "format": "markdown"
+    },
+    "en": {
+      "summary": "An example character entry.",
+      "description": "A multilingual entry with names, aliases and rich content.",
+      "body": "## Introduction\n\nAn **example** character entry.",
+      "format": "markdown"
+    }
+  },
+  "cover": {
+    "url": "https://example.com/cover.jpg",
+    "alt": {"zh-Hans": "示例角色封面", "en": "Example character cover"}
+  },
+  "sources": [
+    {"url": "https://example.com/source", "title": "示例资料来源", "language": "zh-Hans"}
+  ],
+  "parentId": null,
+  "tagIds": [],
+  "categoryIds": []
+}

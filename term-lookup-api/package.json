@@ -10,5 +10,9 @@
   },
   "engines": {
     "node": ">=25.0.0"
+  },
+  "dependencies": {
+    "markdown-it": "15.0.2",
+    "sanitize-html": "2.18.0"
   }
 }

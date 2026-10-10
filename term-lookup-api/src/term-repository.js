@@ -1,233 +1,239 @@
 const { DatabaseSync } = require('node:sqlite');
+const { migrate, transaction } = require('./schema');
+const { ancestorRows } = require('./hierarchy');
+const { TaxonomyRepository } = require('./taxonomy-repository');
+const { termPayload, namePayload, legacyNames, normalizeLookupValue, invalid } = require('./validation');
+const { ApiError, ParentNotFoundError, ParentCycleError, LegacyConflictError } = require('./errors');
 
-function normalizeLookupValue(value) {
-  return value.normalize('NFKC').trim().toLocaleLowerCase('en-US');
+const COLUMNS = `t.id,t.translations_json,t.parent_id,t.created_at,t.updated_at,t.cover_json,t.sources_json,ty.slug AS type`;
+
+function legacyTerm(value) {
+  const scalar = (names) => Object.fromEntries(Object.entries(names).map(([lang, values]) => [lang, values[0]]));
+  return {
+    id: value.id, translations: scalar(value.translations), parentId: value.parentId,
+    parent: value.parent ? { id: value.parent.id, translations: scalar(value.parent.translations) } : null,
+  };
 }
 
-class ParentNotFoundError extends Error {}
-class ParentCycleError extends Error {}
+function mergeDetails(current, changes) {
+  const result = { ...current };
+  for (const [lang, value] of Object.entries(changes ?? {})) {
+    if (value === null) delete result[lang];
+    else result[lang] = { ...result[lang], ...value };
+  }
+  if (Object.keys(result).length > 50) invalid('details supports at most 50 languages');
+  return result;
+}
 
 class TermRepository {
   constructor(databasePath) {
     this.database = new DatabaseSync(databasePath);
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA foreign_keys = ON;
-
-      CREATE TABLE IF NOT EXISTS terms (
-        id INTEGER PRIMARY KEY,
-        english_key TEXT NOT NULL UNIQUE,
-        translations_json TEXT NOT NULL,
-        parent_id INTEGER REFERENCES terms(id) ON DELETE RESTRICT,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS term_translations (
-        term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
-        language_tag TEXT NOT NULL,
-        normalized_value TEXT NOT NULL,
-        PRIMARY KEY (term_id, language_tag),
-        UNIQUE (language_tag, normalized_value)
-      );
-
-      CREATE INDEX IF NOT EXISTS term_translations_lookup
-        ON term_translations(language_tag, normalized_value);
-    `);
-    this.migrateTranslationSchema();
-    this.migrateParentSchema();
-
-    this.findByEnglish = this.database.prepare(
-      'SELECT id FROM terms WHERE english_key = ?',
-    );
-    this.findById = this.database.prepare(
-      'SELECT id, parent_id, translations_json FROM terms WHERE id = ?',
-    );
-    this.insertTerm = this.database.prepare(
-      'INSERT INTO terms (english_key, translations_json, parent_id) VALUES (?, ?, ?)',
-    );
-    this.updateTerm = this.database.prepare(
-      'UPDATE terms SET translations_json = ?, parent_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    );
-    this.deleteTranslations = this.database.prepare(
-      'DELETE FROM term_translations WHERE term_id = ?',
-    );
-    this.insertTranslation = this.database.prepare(
-      'INSERT INTO term_translations (term_id, language_tag, normalized_value) VALUES (?, ?, ?)',
-    );
-    this.findTranslation = this.database.prepare(`
-      SELECT terms.id, terms.translations_json, terms.parent_id,
-        parent.id AS parent_term_id,
-        parent.translations_json AS parent_translations_json
-      FROM term_translations
-      JOIN terms ON terms.id = term_translations.term_id
-      LEFT JOIN terms AS parent ON parent.id = terms.parent_id
-      WHERE term_translations.language_tag = ?
-        AND term_translations.normalized_value = ?
-      ORDER BY terms.id ASC
-      LIMIT 1
-    `);
-  }
-
-  migrateParentSchema() {
-    const version = Number(this.database.prepare('PRAGMA user_version').get().user_version);
-    if (version >= 3) {
-      return;
-    }
-
-    const columns = this.database.prepare('PRAGMA table_info(terms)').all();
-    const hasParentId = columns.some((column) => column.name === 'parent_id');
-    let transactionStarted = false;
     try {
-      this.database.exec('BEGIN IMMEDIATE');
-      transactionStarted = true;
-      if (!hasParentId) {
-        this.database.exec('ALTER TABLE terms ADD COLUMN parent_id INTEGER REFERENCES terms(id) ON DELETE RESTRICT');
-      }
-      this.database.exec(`
-        CREATE INDEX IF NOT EXISTS terms_parent_lookup ON terms(parent_id);
-        PRAGMA user_version = 3;
-        COMMIT;
-      `);
-      transactionStarted = false;
-    } catch (error) {
-      if (transactionStarted) {
-        this.database.exec('ROLLBACK');
-      }
-      throw error;
-    }
+      this.database.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
+      migrate(this.database);
+      this.taxonomy = new TaxonomyRepository(this.database);
+    } catch (error) { this.database.close(); throw error; }
   }
 
-  migrateTranslationSchema() {
-    const version = Number(this.database.prepare('PRAGMA user_version').get().user_version);
-    if (version >= 2) {
-      return;
-    }
-
-    let transactionStarted = false;
-    try {
-      this.database.exec('BEGIN IMMEDIATE');
-      transactionStarted = true;
-
-      const duplicate = this.database.prepare(`
-        SELECT language_tag, normalized_value
-        FROM term_translations
-        GROUP BY language_tag, normalized_value
-        HAVING COUNT(*) > 1
-        LIMIT 1
-      `).get();
-      if (duplicate) {
-        throw new Error(
-          `cannot migrate database: duplicate normalized translation for ${duplicate.language_tag}`,
-        );
-      }
-
-      this.database.exec(`
-        CREATE TABLE term_translations_v2 (
-          term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
-          language_tag TEXT NOT NULL,
-          normalized_value TEXT NOT NULL,
-          PRIMARY KEY (term_id, language_tag),
-          UNIQUE (language_tag, normalized_value)
-        );
-        INSERT INTO term_translations_v2 (term_id, language_tag, normalized_value)
-          SELECT term_id, language_tag, normalized_value FROM term_translations;
-        DROP TABLE term_translations;
-        ALTER TABLE term_translations_v2 RENAME TO term_translations;
-        CREATE INDEX term_translations_lookup
-          ON term_translations(language_tag, normalized_value);
-        PRAGMA user_version = 2;
-        COMMIT;
-      `);
-      transactionStarted = false;
-    } catch (error) {
-      if (transactionStarted) {
-        this.database.exec('ROLLBACK');
-      }
-      throw error;
-    }
+  row(id, summary = false) {
+    return this.database.prepare(`SELECT ${COLUMNS},t.${summary ? 'summaries_json' : 'details_json'} AS details_json
+      FROM terms t JOIN term_types ty ON ty.id=t.type_id WHERE t.id=?`).get(id);
   }
 
-  resolveParent({ termId, parentId }) {
-    if (parentId === null) {
-      return null;
-    }
+  require(id) {
+    const row = this.row(id);
+    if (!row) throw new ApiError(404, 'term_not_found');
+    return row;
+  }
 
-    const parent = this.findById.get(parentId);
-    if (!parent) {
-      throw new ParentNotFoundError('parent term does not exist');
-    }
+  summary(row) { return { id: row.id, type: row.type, translations: JSON.parse(row.translations_json), parentId: row.parent_id }; }
 
-    const visited = new Set();
-    let current = parent;
-    while (current) {
-      if (current.id === termId || visited.has(current.id)) {
-        throw new ParentCycleError('parent relationship would create a cycle');
-      }
-      visited.add(current.id);
-      current = current.parent_id === null ? null : this.findById.get(current.parent_id);
-    }
+  ancestorRows(id, parentId) { return ancestorRows((parent) => this.row(parent, true), parentId, id); }
 
+  ancestors(id) {
+    const row = this.require(id);
+    return this.ancestorRows(id, row.parent_id).map((parent) => this.summary(parent));
+  }
+
+  relation(kind, id) {
+    const table = kind === 'tags' ? 'term_tags' : 'term_categories';
+    const column = kind === 'tags' ? 'tag_id' : 'category_id';
+    const rows = this.database.prepare(`SELECT x.* FROM ${kind} x JOIN ${table} r ON r.${column}=x.id
+      WHERE r.term_id=? ORDER BY x.id`).all(id);
+    return rows.map((row) => this.taxonomy.format(kind, row));
+  }
+
+  format(row) {
+    const ancestors = this.ancestorRows(row.id, row.parent_id).map((parent) => this.summary(parent));
+    const tags = this.relation('tags', row.id);
+    const categories = this.relation('categories', row.id);
     return {
-      id: parent.id,
-      translations: JSON.parse(parent.translations_json),
+      ...this.summary(row), details: JSON.parse(row.details_json),
+      cover: row.cover_json === null ? null : JSON.parse(row.cover_json), sources: JSON.parse(row.sources_json),
+      tagIds: tags.map((tag) => tag.id), categoryIds: categories.map((category) => category.id), tags, categories,
+      parent: ancestors.at(-1) ?? null, ancestors, createdAt: row.created_at, updatedAt: row.updated_at,
     };
   }
 
-  upsert(translations, parentId = null) {
-    let transactionStarted = false;
-    try {
-      this.database.exec('BEGIN IMMEDIATE');
-      transactionStarted = true;
+  get(id) { return this.format(this.require(id)); }
 
-      const englishKey = normalizeLookupValue(translations.en);
-      const serializedTranslations = JSON.stringify(translations);
-      const existing = this.findByEnglish.get(englishKey);
-      const created = !existing;
-      const parent = this.resolveParent({ termId: existing?.id, parentId });
-      const termId = existing
-        ? (this.updateTerm.run(serializedTranslations, parentId, existing.id), existing.id)
-        : Number(this.insertTerm.run(englishKey, serializedTranslations, parentId).lastInsertRowid);
-
-      this.deleteTranslations.run(termId);
-      for (const [languageTag, value] of Object.entries(translations)) {
-        this.insertTranslation.run(termId, languageTag, normalizeLookupValue(value));
+  validateRelations(value, id) {
+    const type = this.database.prepare('SELECT id FROM term_types WHERE slug=?').get(value.type);
+    if (!type) throw new ApiError(400, 'type_not_found');
+    this.ancestorRows(id, value.parentId);
+    for (const [kind, ids] of [['tags', value.tagIds], ['categories', value.categoryIds]]) {
+      for (const reference of ids) {
+        if (!this.taxonomy.row(kind, reference)) throw new ApiError(400, kind === 'tags' ? 'tag_not_found' : 'category_not_found');
       }
-
-      this.database.exec('COMMIT');
-      transactionStarted = false;
-      return { id: termId, translations, parentId, parent, created };
-    } catch (error) {
-      if (transactionStarted) {
-        this.database.exec('ROLLBACK');
-      }
-      throw error;
     }
+    return type.id;
+  }
+
+  write(id, value) {
+    const stored = Object.fromEntries(['type', 'translations', 'details', 'cover', 'sources', 'parentId', 'tagIds', 'categoryIds']
+      .map((field) => [field, value[field]]));
+    if (Buffer.byteLength(JSON.stringify(stored)) > 2 * 1024 * 1024) throw new ApiError(413, 'payload_too_large');
+    const typeId = this.validateRelations(value, id);
+    const summaries = Object.fromEntries(Object.entries(value.details).map(([lang, detail]) => [lang,
+      Object.hasOwn(detail, 'summary') ? { summary: detail.summary } : {},
+    ]));
+    const args = [normalizeLookupValue(value.translations.en[0]), JSON.stringify(value.translations), typeId,
+      JSON.stringify(value.details), JSON.stringify(summaries), value.cover === null ? null : JSON.stringify(value.cover),
+      JSON.stringify(value.sources), value.parentId];
+    if (id === undefined) {
+      id = Number(this.database.prepare(`INSERT INTO terms
+        (english_key,translations_json,type_id,details_json,summaries_json,cover_json,sources_json,parent_id)
+        VALUES (?,?,?,?,?,?,?,?)`).run(...args).lastInsertRowid);
+    } else {
+      this.database.prepare(`UPDATE terms SET english_key=?,translations_json=?,type_id=?,details_json=?,summaries_json=?,
+        cover_json=?,sources_json=?,parent_id=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(...args, id);
+    }
+    this.database.prepare('DELETE FROM term_translations WHERE term_id=?').run(id);
+    const insert = this.database.prepare('INSERT INTO term_translations VALUES (?,?,?)');
+    for (const [lang, names] of Object.entries(value.translations)) {
+      for (const name of names) insert.run(id, lang, normalizeLookupValue(name));
+    }
+    for (const [table, column, ids] of [['term_tags', 'tag_id', value.tagIds], ['term_categories', 'category_id', value.categoryIds]]) {
+      this.database.prepare(`DELETE FROM ${table} WHERE term_id=?`).run(id);
+      const insertRelation = this.database.prepare(`INSERT INTO ${table} (term_id,${column}) VALUES (?,?)`);
+      for (const reference of ids) insertRelation.run(id, reference);
+    }
+    return this.get(id);
+  }
+
+  create(payload) {
+    const value = termPayload(payload);
+    return transaction(this.database, () => this.write(undefined, {
+      type: 'term', details: {}, cover: null, sources: [], parentId: null, tagIds: [], categoryIds: [], ...value,
+    }));
+  }
+
+  patch(id, payload) {
+    return transaction(this.database, () => {
+      const current = this.get(id);
+      const patch = termPayload(payload, true);
+      return this.write(id, { ...current, ...patch, details: mergeDetails(current.details, patch.details) });
+    });
+  }
+
+  list({ limit = 20, offset = 0, q, from, to, type, parentId, tagId, categoryId } = {}) {
+    const clauses = [];
+    const args = [];
+    if (q !== undefined) {
+      clauses.push('EXISTS (SELECT 1 FROM term_translations n WHERE n.term_id=t.id AND n.language_tag=? AND n.normalized_value=?)');
+      args.push(from, normalizeLookupValue(q));
+    }
+    if (type !== undefined) { clauses.push('ty.slug=?'); args.push(type); }
+    if (parentId !== undefined) { clauses.push('t.parent_id IS ?'); args.push(parentId); }
+    if (tagId !== undefined) { clauses.push('EXISTS (SELECT 1 FROM term_tags r WHERE r.term_id=t.id AND r.tag_id=?)'); args.push(tagId); }
+    if (categoryId !== undefined) { clauses.push('EXISTS (SELECT 1 FROM term_categories r WHERE r.term_id=t.id AND r.category_id=?)'); args.push(categoryId); }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const source = `FROM terms t JOIN term_types ty ON ty.id=t.type_id${where}`;
+    const total = this.database.prepare(`SELECT COUNT(*) AS n ${source}`).get(...args).n;
+    const rows = this.database.prepare(`SELECT ${COLUMNS},t.summaries_json AS details_json ${source} ORDER BY t.id LIMIT ? OFFSET ?`).all(...args, limit, offset);
+    const items = rows.map((row) => {
+      const item = this.format(row);
+      if (to !== undefined) { item.source = from ?? null; item.target = to; item.translation = item.translations[to] ?? null; }
+      return item;
+    });
+    return { items, total, limit, offset };
+  }
+
+  remove(id) {
+    return transaction(this.database, () => {
+      this.require(id);
+      if (this.database.prepare('SELECT id FROM terms WHERE parent_id=? LIMIT 1').get(id)) throw new ApiError(409, 'term_has_children');
+      this.database.prepare('DELETE FROM terms WHERE id=?').run(id);
+      return { deleted: true, id };
+    });
+  }
+
+  changeName(id, payload, remove = false) {
+    return transaction(this.database, () => {
+      const current = this.get(id);
+      const { language, value } = namePayload(payload, remove);
+      const names = current.translations[language] ?? [];
+      const index = names.findIndex((name) => normalizeLookupValue(name) === normalizeLookupValue(value));
+      if (remove) {
+        if (index === -1) throw new ApiError(404, 'name_not_found');
+        if (['en', 'zh-Hans'].includes(language) && names.length === 1) invalid('cannot remove last required name');
+        names.splice(index, 1);
+        if (!names.length) delete current.translations[language];
+      } else {
+        if (index !== -1) return current;
+        if (names.length >= 50) invalid('each language supports at most 50 names');
+        if (!Object.hasOwn(current.translations, language) && Object.keys(current.translations).length >= 50) {
+          invalid('translations supports at most 50 languages');
+        }
+        current.translations[language] = [...names, value];
+      }
+      return this.write(id, current);
+    });
+  }
+
+  matching(value, from) {
+    return this.database.prepare(`SELECT t.id,ty.slug AS type FROM terms t JOIN term_types ty ON ty.id=t.type_id
+      JOIN term_translations n ON n.term_id=t.id WHERE n.language_tag=? AND n.normalized_value=? ORDER BY t.id`).all(from, normalizeLookupValue(value));
+  }
+
+  upsert(input, parentId = null) {
+    const submitted = legacyNames(input);
+    return transaction(this.database, () => {
+      const matches = this.matching(submitted.en[0], 'en');
+      if (matches.length > 1) throw new LegacyConflictError('ambiguous_term');
+      if (matches.length && matches[0].type !== 'term') throw new LegacyConflictError();
+      const existing = matches.length ? this.get(matches[0].id) : null;
+      const names = { ...(existing?.translations ?? {}) };
+      for (const [lang, submittedNames] of Object.entries(submitted)) {
+        const value = submittedNames[0];
+        const previous = names[lang] ?? [];
+        const aliases = normalizeLookupValue(previous[0] ?? '') === normalizeLookupValue(value) ? previous.slice(1) : previous;
+        const seen = new Set();
+        names[lang] = [...submittedNames, ...aliases].filter((name) => {
+          const normalized = normalizeLookupValue(name);
+          if (seen.has(normalized)) return false;
+          seen.add(normalized);
+          return true;
+        });
+      }
+      for (const [lang, values] of Object.entries(submitted)) {
+        for (const value of values) {
+          if (this.matching(value, lang).some((row) => row.id !== existing?.id)) throw new LegacyConflictError();
+        }
+      }
+      const value = this.write(existing?.id, {
+        type: 'term', details: {}, cover: null, sources: [], tagIds: [], categoryIds: [],
+        ...existing, translations: names, parentId,
+      });
+      return { ...legacyTerm(value), created: !existing };
+    });
   }
 
   find({ value, from }) {
-    const row = this.findTranslation.get(from, normalizeLookupValue(value));
-    if (!row) {
-      return null;
-    }
-
-    return {
-      id: row.id,
-      translations: JSON.parse(row.translations_json),
-      parentId: row.parent_id ?? null,
-      parent: row.parent_term_id === null
-        ? null
-        : {
-          id: row.parent_term_id,
-          translations: JSON.parse(row.parent_translations_json),
-        },
-    };
+    const matches = this.matching(value, from);
+    if (matches.length > 1) throw new LegacyConflictError('ambiguous_term');
+    return matches.length ? legacyTerm(this.get(matches[0].id)) : null;
   }
 }
 
-module.exports = {
-  ParentCycleError,
-  ParentNotFoundError,
-  TermRepository,
-  normalizeLookupValue,
-};
+module.exports = { TermRepository, ParentNotFoundError, ParentCycleError, normalizeLookupValue };

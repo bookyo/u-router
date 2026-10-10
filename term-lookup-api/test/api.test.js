@@ -11,10 +11,11 @@ const { TermRepository } = require('../src/term-repository');
 
 async function startTestServer() {
   const directory = mkdtempSync(join(tmpdir(), 'term-lookup-api-'));
-  const server = createServer(createApp({
+  const app = createApp({
     apiKey: 'test-api-key',
     databasePath: join(directory, 'terms.sqlite'),
-  }));
+  });
+  const server = createServer(app);
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
@@ -23,6 +24,7 @@ async function startTestServer() {
     baseUrl: `http://127.0.0.1:${port}`,
     async close() {
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      app.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };
