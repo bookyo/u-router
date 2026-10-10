@@ -108,6 +108,7 @@ curl -sS http://127.0.0.1:4444/v2/terms/1/names \
 | 接口 | 说明 |
 | --- | --- |
 | `POST /v2/terms` | 创建词条 |
+| `POST /v2/terms/import` | 批量幂等导入／预检；需要 API Key |
 | `GET /v2/terms` | 分页列表、精确检索与组合筛选 |
 | `GET /v2/terms/:id` | 完整详情 |
 | `PATCH /v2/terms/:id` | 部分更新 |
@@ -129,6 +130,66 @@ curl -sS http://127.0.0.1:4444/v2/terms/1/names \
 词条列表支持 `q + from`（必须一起传）、可选 `to`、`type`、`parentId`、`tagId`、`categoryId`，筛选条件按 AND 组合。`parentId=null` 筛选顶级词条。没有目标语言时 `translation: null`；有目标语言时是完整名称数组。没有 q 时可以列出全部词条。
 
 所有 taxonomy 列表支持 limit/offset，分类额外支持 parentId（含 null）。未知或重复查询参数、非法 ID 与分页数值返回 400。
+
+## 批量导入
+
+`POST /v2/terms/import` 需要 `X-API-Key` 或 Bearer Key，包括预检。
+每批 1–100 条，请求体最大 2MiB；更多数据由调用方分批提交，每批独立事务。
+请求格式见 [docs/examples/import.json](docs/examples/import.json)：
+
+```json
+{
+  "dryRun": true,
+  "items": [{
+    "source": "curated-games",
+    "externalId": "example-game",
+    "term": {
+      "type": "work",
+      "translations": {"en": ["Example Game", "Example"], "zh-Hans": ["示例游戏"]}
+    }
+  }]
+}
+```
+
+在模块目录运行预检（示例文件默认 `dryRun: true`）：
+
+```sh
+curl -sS http://127.0.0.1:4444/v2/terms/import \
+  -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  --data-binary @docs/examples/import.json
+```
+
+确认结果后将请求中的 `dryRun` 改为 `false` 再提交；省略该字段也会实际写入。
+
+- `source`：1–64 字符的小写 slug，只允许字母、数字、连字符，首字符不能是连字符。
+- `externalId`：1–256 字符的字符串，区分大小写，不允许空白首尾或控制字符。数字 ID 也应传字符串。
+- `term`：沿用单条创建的所有字段与校验，必须有 `en`、`zh-Hans` 名称数组。
+- 首次出现的「source + externalId」创建新词条并保存映射；同名不自动合并。已经通过单条接口创建的同名词条也不会被自动认领。
+- 重复导入仅追加新语言及别名，按 NFKC＋去首尾空白＋忽略大小写去重，保留原首选名及语言。
+  既有描述、正文、封面、来源、父级、标签、分类都不覆盖；要改这些字段请用 PATCH。
+  提供的内容与引用仍须合法，显式类型与既有类型不同返回 `409 import_type_conflict`。
+- 单批重复「source + externalId」返回 400，而不是按顺序覆盖。跨来源 ID 不会自动关联。
+- 父级、标签、分类必须已存在；不支持在请求内通过外部 ID 互相引用或新建 taxonomy。
+- 任一条校验／引用／存储失败整批回滚，词条、检索索引和来源映射都不保留部分结果。
+- `dryRun: true` 使用相同事务执行约束检查，然后回滚（包括自增序号）。返回的 ID 只是预估，不能当作已创建词条 ID；正式提交前数据库可能已变化。
+- 删除词条会同步清除导入映射，之后重新导入该来源 ID 将创建新词条。
+
+成功返回 HTTP 200：
+
+```json
+{
+  "dryRun": true,
+  "created": 1,
+  "updated": 0,
+  "unchanged": 0,
+  "items": [{"index": 0, "source": "curated-games", "externalId": "example-game", "id": 1, "status": "created"}]
+}
+```
+
+条目错误返回 `{error,index}`，`index` 从 0 开始；`validation_error` 另带 `message`。
+请求整体格式错误、超限、鉴权失败可能没有条目 index。失败时不返回部分成功结果，因为整批都未提交。
+存储错误返回 `500 storage_error`，不泄露数据库错误正文。数据库版本升级到 6，
+启动时自动为版本 5 增加来源映射表并保留原有内容与关系；部署前建议备份数据库，升级后不要用旧版程序打开它。
 
 ## 类型、标签和分类
 

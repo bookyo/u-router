@@ -35,7 +35,7 @@ function legacy(t, { version = 3, malformed = false, parentId = 1 } = {}) {
 test('migration converts scalar names, preserves IDs, parents and timestamps and is idempotent', (t) => {
   const path = legacy(t);
   let repository = new TermRepository(path);
-  assert.equal(Number(repository.database.prepare('PRAGMA user_version').get().user_version), 5);
+  assert.equal(Number(repository.database.prepare('PRAGMA user_version').get().user_version), 6);
   let row = repository.get(2);
   assert.deepEqual(row.translations.en, ['Alice']);
   assert.equal(row.parentId, 1);

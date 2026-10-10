@@ -1,6 +1,11 @@
 const { legacyNames, normalizeLookupValue } = require('./validation');
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
+const IMPORT_SCHEMA = `CREATE TABLE term_import_keys (
+  source TEXT NOT NULL, external_id TEXT NOT NULL,
+  term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+  PRIMARY KEY(source,external_id)
+); CREATE INDEX term_import_keys_term ON term_import_keys(term_id);`;
 const BUILTIN_TYPES = [
   ['term', 'Term', '术语'], ['person', 'Person', '人物'], ['character', 'Character', '角色'],
   ['work', 'Work', '作品'], ['place', 'Place', '地点'], ['organization', 'Organization', '组织'], ['item', 'Item', '物品'],
@@ -22,6 +27,15 @@ function migrate(database) {
   const version = Number(database.prepare('PRAGMA user_version').get().user_version);
   if (version > SCHEMA_VERSION) throw new Error(`unsupported database schema version ${version}`);
   if (version === SCHEMA_VERSION) return;
+
+  // v5 already has rich content and taxonomy. Do not rebuild it using legacy conversion.
+  if (version === 5) {
+    transaction(database, () => {
+      database.exec(IMPORT_SCHEMA);
+      database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    });
+    return;
+  }
 
   transaction(database, () => {
     try {
@@ -121,6 +135,7 @@ function migrate(database) {
         }
       }
       if (database.prepare('PRAGMA foreign_key_check').all().length) throw new Error('foreign key validation failed');
+      database.exec(IMPORT_SCHEMA);
       database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     } catch (error) {
       throw new Error(`cannot migrate database: ${error.message}`, { cause: error });

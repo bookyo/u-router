@@ -1,0 +1,28 @@
+{
+  "dryRun": true,
+  "items": [
+    {
+      "source": "curated-games",
+      "externalId": "example-game",
+      "term": {
+        "type": "work",
+        "translations": {
+          "en": ["Example Game", "Example"],
+          "zh-Hans": ["示例游戏", "示例"],
+          "ja": ["サンプルゲーム"]
+        }
+      }
+    },
+    {
+      "source": "curated-games",
+      "externalId": "another-game",
+      "term": {
+        "type": "work",
+        "translations": {
+          "en": ["Another Game"],
+          "zh-Hans": ["另一款游戏"]
+        }
+      }
+    }
+  ]
+}

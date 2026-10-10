@@ -9,6 +9,7 @@ function sendError(response, error) {
   if (error instanceof ApiError) {
     const payload = { error: error.error };
     if (error.error === 'validation_error') payload.message = error.message;
+    if (Number.isSafeInteger(error.index) && error.index >= 0) payload.index = error.index;
     sendJson(response, error.status, payload);
   } else if (error?.code === 'ERR_SQLITE_ERROR' && error.errcode === 2067) {
     sendJson(response, 409, { error: 'slug_conflict' });

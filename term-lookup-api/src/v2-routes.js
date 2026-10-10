@@ -2,11 +2,19 @@ const { ApiError } = require('./errors');
 const { readJson, sendJson } = require('./http');
 const { filters, query, integerQuery, language } = require('./validation');
 const { renderContent } = require('./content');
+const { importTerms } = require('./term-import');
 
 async function handleV2(request, response, url, repository) {
   const match = /^\/v2\/(terms|types|tags|categories)(?:\/([^/]+))?(?:\/([^/]+))?$/.exec(url.pathname);
   if (!match) throw new ApiError(404, 'not_found');
   const [, kind, rawId, action] = match;
+  if (kind === 'terms' && rawId === 'import' && !action) {
+    if (request.method !== 'POST') throw new ApiError(404, 'not_found');
+    query(url.searchParams, []);
+    const payload = await readJson(request, response, 2 * 1024 * 1024);
+    sendJson(response, 200, importTerms(repository, payload));
+    return;
+  }
   const id = rawId === undefined ? undefined : integerQuery(rawId, 1);
   const method = request.method;
   const params = url.searchParams;
